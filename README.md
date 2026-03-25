@@ -40,20 +40,38 @@ bash llama.server.UD-Q4_K_XL.docker-rocm.sh 2>&1 | tee llama.server.log
 
 ## Configuration notes
 
-- `--no-mmproj` is required. As of build b8495, llama.cpp auto-downloads a multimodal
-  projector when using `-hf` if one is present in the repo. This model is text-only.
 - `-cram 2048` enables a 2GB prompt cache in RAM, speeding up repeated context
   (e.g. system prompts).
 - Model files are cached at `~/.cache/huggingface/` on the host and mounted into the
   container, so they persist across restarts and are only downloaded once.
-- At 131072 ctx with f16 KV, VRAM usage is ~9500 MiB (Q4_K_M) or ~9772 MiB (UD-Q4_K_XL)
-  out of 12272 MiB available.
 - `HSA_OVERRIDE_GFX_VERSION=10.3.0` is passed into the container at runtime. See the
   gfx1031 section below for why this is required.
 - `--swa-full` does not apply to this model (`n_swa = 0`) and should be omitted.
 - Qwen3.5 is a thinking model. Use `max_tokens` of at least 400 to give it room to
   reason before producing a final answer. The response arrives in `reasoning_content`
   (thinking) and `content` (answer) fields.
+- `--jinja` is required to use the model's own chat template, which handles Qwen3.5's
+  thinking tokens correctly.
+- `--flash-attn on` reduces VRAM pressure at large context sizes and improves throughput.
+- `--cache-type-k q8_0 --cache-type-v q8_0` quantizes the KV cache. Because Qwen3.5-9B
+  is a hybrid SSM/attention model with only 8 of 32 layers using a KV cache, the KV
+  footprint is small relative to context size. At 131072 ctx, measured VRAM usage is
+  ~9500 MiB (Q4_K_M) or ~9772 MiB (UD-Q4_K_XL) with f16 KV; q8_0 reduces that further,
+  leaving comfortable headroom in the 12272 MiB available. If UD-Q4_K_XL hits OOM,
+  drop to `q4_0` for both cache types.
+
+## OpenCode configuration
+
+`opencode.json` defines two model entries — one per quantization — because the
+`contextLength` hint tells OpenCode how much context to use:
+
+| Entry | contextLength |
+|-------|--------------|
+| `local-llama/qwen-q4km` | 131072 |
+| `local-llama/qwen-udq4kxl` | 131072 |
+
+Only one server runs at a time. Switch the `"model"` field in `opencode.json` to match
+whichever launcher you started.
 
 ## Verify setup is running
 

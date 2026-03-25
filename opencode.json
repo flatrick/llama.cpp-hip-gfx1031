@@ -8,14 +8,20 @@
         "apiKey": "dummy"
       },
       "models": {
-        "qwen-local": {
-          "name": "Local Qwen 3.5 9B",
-          "maxTokens": 8192
+        "qwen-q4km": {
+          "name": "Qwen3.5-9B Q4_K_M",
+          "maxTokens": 16384,
+          "contextLength": 131072
+        },
+        "qwen-udq4kxl": {
+          "name": "Qwen3.5-9B UD-Q4_K_XL",
+          "maxTokens": 16384,
+          "contextLength": 32768
         }
       }
     }
   },
-  "model": "local-llama/qwen-local",
+  "model": "local-llama/qwen-q4km",
   "permission": {
     "bash": "ask",
     "edit": "allow",

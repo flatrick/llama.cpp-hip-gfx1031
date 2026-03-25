@@ -25,7 +25,10 @@ fi
     --n-gpu-layers -1 \
     --batch-size 1024 \
     --parallel 1 \
-    --no-mmproj \
+    --flash-attn on \
+    --cache-type-k q8_0 \
+    --cache-type-v q8_0 \
+    --jinja \
     -cram 2048 \
     --host 0.0.0.0 \
     --port 8080
