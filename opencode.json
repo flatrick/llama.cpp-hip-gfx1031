@@ -11,12 +11,12 @@
         "qwen-q4km": {
           "name": "Qwen3.5-9B Q4_K_M",
           "maxTokens": 16384,
-          "contextLength": 131072
+          "contextLength": 40960
         },
         "qwen-udq4kxl": {
           "name": "Qwen3.5-9B UD-Q4_K_XL",
           "maxTokens": 16384,
-          "contextLength": 32768
+          "contextLength": 40960
         }
       }
     }
