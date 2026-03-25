@@ -17,8 +17,17 @@ No ROCm or llama.cpp packages needed on the host. The container brings its own R
 
 Currently using [Qwen3.5-9B-GGUF by unsloth.ai](https://huggingface.co/unsloth/Qwen3.5-9B-GGUF)
 
-Qwen3.5-9B is a hybrid SSM/attention model (Gated Delta Net). Only 8 of 32 layers
-use a KV cache, so the KV cache stays small relative to context size.
+Two quantizations are available — both are the same model weights at different
+precision:
+
+| File | Weight size | Quality |
+|------|------------|---------|
+| `Qwen3.5-9B-Q4_K_M.gguf` | 5.3 GB | Standard Q4 |
+| `Qwen3.5-9B-UD-Q4_K_XL.gguf` | 5.6 GB | Higher quality Q4 variant |
+
+GGUF metadata (read via `vram_calc.py`): 32 attention layers, 4 KV heads per layer,
+256 head dimension. Note: an earlier version of this README incorrectly stated "8 of
+32 layers use a KV cache" — that was wrong. All 32 layers use attention with GQA.
 
 ## Starting the server
 
@@ -53,12 +62,74 @@ bash llama.server.UD-Q4_K_XL.docker-rocm.sh 2>&1 | tee llama.server.log
 - `--jinja` is required to use the model's own chat template, which handles Qwen3.5's
   thinking tokens correctly.
 - `--flash-attn on` reduces VRAM pressure at large context sizes and improves throughput.
-- `--cache-type-k q8_0 --cache-type-v q8_0` quantizes the KV cache. Because Qwen3.5-9B
-  is a hybrid SSM/attention model with only 8 of 32 layers using a KV cache, the KV
-  footprint is small relative to context size. At 131072 ctx, measured VRAM usage is
-  ~9500 MiB (Q4_K_M) or ~9772 MiB (UD-Q4_K_XL) with f16 KV; q8_0 reduces that further,
-  leaving comfortable headroom in the 12272 MiB available. If UD-Q4_K_XL hits OOM,
-  drop to `q4_0` for both cache types.
+- `--defrag-thold 0.1` enables KV cache defragmentation during long sessions, recovering
+  fragmented memory as context shifts.
+- `--no-warmup` skips the initial forward pass, reducing startup time and deferring
+  compute buffer allocation until first inference.
+
+## Measured VRAM limits (RX 6700 XT 12 GB)
+
+Tested with `stress_test.py` using both models under identical settings
+(`--ctx-size 131072 --cache-type-k q4_0 --cache-type-v q4_0 --batch-size 1024`):
+
+| prompt tokens | Q4_K_M VRAM | UD-Q4_K_XL VRAM |
+|--------------|-------------|-----------------|
+| baseline (idle) | 7.39 GB | 7.46 GB |
+| ~32K | 10.19 GB | 10.53 GB |
+| ~48K | 11.90 GB | 11.93 GB |
+| ~64K | **OOM crash** | **OOM crash** |
+
+Both models crash identically at ~64K tokens. The crash occurs in flash attention's
+tile allocator (`launch_fattn`) at ~78K cumulative tokens in the attention window
+(the 64K prompt builds on cached context from earlier in the conversation). This is
+a hard hardware limit — model variant makes no practical difference.
+
+**Safe operating limit: ~40–48K tokens of prompt input.**
+
+The VRAM grows during inference because flash attention needs working memory that
+scales with sequence length, not just the static KV cache. The KV cache itself
+allocates dynamically as context fills (not pre-allocated at startup).
+
+## Tuning guide
+
+Use `vram_calc.py` to estimate the effect of changes before applying them.
+Run `stress_test.py` after changes to measure the real impact.
+
+### Parameters and trade-offs
+
+| Parameter | Increase | Decrease |
+|-----------|----------|----------|
+| `--ctx-size` | More conversation history fits; KV cache grows | Less history; smaller KV cache |
+| `--cache-type-k/v` | `q8_0` = better recall quality, more VRAM; `q4_0` = half the VRAM, slightly fuzzier recall of old tokens | — |
+| `--batch-size` | Faster prompt processing (prefill); larger static compute buffers at startup | Slower prefill; lower startup VRAM (does NOT change the OOM crash point) |
+| `--flash-attn` | `on` = lower VRAM for long contexts, faster; `off` = more VRAM (full attention matrix), slower | — |
+
+### Current settled config (both models)
+
+```
+--ctx-size 131072       # maximum conversation window
+--cache-type-k q4_0     # minimum viable cache type at this ctx size
+--cache-type-v q4_0     # q8_0 would OOM at 131072 ctx
+--batch-size 1024       # faster prefill; startup VRAM same as 512
+--flash-attn on         # required at this context size
+--defrag-thold 0.1      # helps long agentic sessions
+```
+
+**Why q4_0 and not q8_0:** At 131072 ctx, q8_0 KV cache needs ~8 GB, which combined
+with model weights (~5.5 GB) exceeds 12 GB before any inference begins. q4_0 halves
+the KV cache to ~4 GB. The quality tradeoff is real but minor — q4_0 introduces
+slightly imprecise recall of tokens far back in context. Mitigate by having the agent
+write important details to disk and re-read them rather than relying on long-range
+attention recall.
+
+**Why not reduce ctx-size to get q8_0 back:** The KV cache allocates dynamically
+(not pre-allocated at startup), so reducing ctx-size does not free enough VRAM to
+offset switching to q8_0. The OOM crash point does not shift meaningfully.
+
+**Why batch-size does not help with OOM:** Batch-size affects static compute buffer
+allocation at startup. The OOM crash is caused by flash attention's dynamic working
+memory during inference, which scales with sequence length regardless of batch-size.
+Confirmed by testing: batch-size 512 vs 1024 gives identical crash points.
 
 ## OpenCode configuration
 
