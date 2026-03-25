@@ -23,11 +23,12 @@ fi
     --model-url "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-UD-Q4_K_XL.gguf" \
     --ctx-size 131072 \
     --n-gpu-layers -1 \
-    --batch-size 1024 \
+    --batch-size 512 \
     --parallel 1 \
     --flash-attn on \
-    --cache-type-k q8_0 \
-    --cache-type-v q8_0 \
+    --defrag-thold 0.1 \
+    --cache-type-k q4_0 \
+    --cache-type-v q4_0 \
     --jinja \
     --no-warmup \
     -cram 2048 \
