@@ -20,9 +20,10 @@ fi
   -p 8080:8080 \
   "$ROCM_IMAGE" \
     --model-url "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf" \
-    --ctx-size 131072 \
+    --ctx-size 65536 \
     --n-gpu-layers -1 \
     --batch-size 1024 \
+    --ubatch-size 256 \
     --parallel 1 \
     --flash-attn on \
     --defrag-thold 0.1 \
