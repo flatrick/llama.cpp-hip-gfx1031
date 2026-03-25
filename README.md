@@ -93,23 +93,26 @@ bash llama.server.UD-Q4_K_XL.docker-rocm.sh 2>&1 | tee llama.server.log
 Tested with `stress_test.py` using both models under identical settings
 (`--ctx-size 131072 --cache-type-k q4_0 --cache-type-v q4_0 --batch-size 1024`):
 
+Tested with `--ctx-size 65536 --ubatch-size 256 --cache-type-k q4_0 --batch-size 1024`:
+
 | prompt tokens | Q4_K_M VRAM | UD-Q4_K_XL VRAM |
 |--------------|-------------|-----------------|
-| baseline (idle) | 7.39 GB | 7.46 GB |
-| ~32K | 10.19 GB | 10.53 GB |
-| ~48K | 11.90 GB | 11.93 GB |
-| ~64K | **OOM crash** | **OOM crash** |
+| baseline (idle) | 6.39 GB | 6.66 GB |
+| ~32K | 9.45 GB | 9.76 GB |
+| ~48K | ctx-size limit (HTTP 400) | ctx-size limit (HTTP 400) |
 
-Both models crash identically at ~64K tokens. The crash occurs in flash attention's
-tile allocator (`launch_fattn`) at ~78K cumulative tokens in the attention window
-(the 64K prompt builds on cached context from earlier in the conversation). This is
-a hard hardware limit — model variant makes no practical difference.
+The server now refuses requests that exceed ctx-size with a clean HTTP 400 rather
+than crashing. The practical single-request limit is ~57–60K tokens (ctx-size 65536
+minus headroom for the response).
 
-**Safe operating limit: ~40–48K tokens of prompt input.**
+Earlier testing at ctx-size 131072 showed OOM crashes in flash attention's tile
+allocator (`launch_fattn`) at ~74K cumulative tokens. That is the underlying hardware
+limit — reducing ctx-size to 65536 means the server refuses before reaching it.
+Model variant makes no practical difference to either limit.
 
 The VRAM grows during inference because flash attention needs working memory that
-scales with sequence length, not just the static KV cache. The KV cache itself
-allocates dynamically as context fills (not pre-allocated at startup).
+scales with sequence length. The KV cache allocates dynamically as context fills
+(not pre-allocated at startup) — reducing ctx-size freed ~1 GB at baseline.
 
 ## Tuning guide
 
@@ -120,37 +123,40 @@ Run `stress_test.py` after changes to measure the real impact.
 
 | Parameter | Increase | Decrease |
 |-----------|----------|----------|
-| `--ctx-size` | More conversation history fits; KV cache grows | Less history; smaller KV cache |
+| `--ctx-size` | More conversation history; server refuses oversized requests gracefully | Less history; lower baseline VRAM (~1 GB freed going 131072→65536) |
+| `--ubatch-size` | Fewer GPU dispatches per batch, faster prefill | Smaller FA working memory per dispatch; may push OOM boundary higher |
 | `--cache-type-k/v` | `q8_0` = better recall quality, more VRAM; `q4_0` = half the VRAM, slightly fuzzier recall of old tokens | — |
-| `--batch-size` | Faster prompt processing (prefill); larger static compute buffers at startup | Slower prefill; lower startup VRAM (does NOT change the OOM crash point) |
+| `--batch-size` | Faster prompt processing (prefill) | Slower prefill; does NOT change the OOM crash point |
 | `--flash-attn` | `on` = lower VRAM for long contexts, faster; `off` = more VRAM (full attention matrix), slower | — |
 
 ### Current settled config (both models)
 
 ```
---ctx-size 131072       # maximum conversation window
---cache-type-k q4_0     # minimum viable cache type at this ctx size
---cache-type-v q4_0     # q8_0 would OOM at 131072 ctx
---batch-size 1024       # faster prefill; startup VRAM same as 512
+--ctx-size 65536        # contextLength (40960) + maxTokens (16384) = 57344; fits in 65536
+--ubatch-size 256       # smaller FA tile dispatch; reduces peak working memory
+--cache-type-k q4_0     # q8_0 would need ~8 GB KV cache at 131072 ctx — OOM
+--cache-type-v q4_0     # kept q4_0 even at 65536 ctx for headroom
+--batch-size 1024       # faster prefill; startup VRAM unaffected vs 512
 --flash-attn on         # required at this context size
---defrag-thold 0.1      # helps long agentic sessions
+--defrag-thold 0.1      # prevents fragmentation during long agentic sessions
+--no-warmup             # defers buffer allocation to first inference
 ```
 
-**Why q4_0 and not q8_0:** At 131072 ctx, q8_0 KV cache needs ~8 GB, which combined
-with model weights (~5.5 GB) exceeds 12 GB before any inference begins. q4_0 halves
-the KV cache to ~4 GB. The quality tradeoff is real but minor — q4_0 introduces
-slightly imprecise recall of tokens far back in context. Mitigate by having the agent
-write important details to disk and re-read them rather than relying on long-range
-attention recall.
+**Why q4_0 and not q8_0:** q8_0 KV cache at 65536 ctx needs ~2 GB; combined with
+model weights (~5.5 GB) it fits, but leaves only ~4 GB for FA working memory — tight
+given the measured OOM boundary. q4_0 halves the KV cache to ~1 GB and gives more
+headroom. The quality tradeoff is minor: slightly imprecise recall of old tokens.
+Mitigate by having the agent write important details to disk rather than relying on
+long-range attention recall.
 
-**Why not reduce ctx-size to get q8_0 back:** The KV cache allocates dynamically
-(not pre-allocated at startup), so reducing ctx-size does not free enough VRAM to
-offset switching to q8_0. The OOM crash point does not shift meaningfully.
+**Why ctx-size 65536 and not 131072:** Reducing ctx-size freed ~1 GB at baseline and
+aligns with the opencode.json limits. More importantly, at 131072 the server would OOM
+crash mid-inference; at 65536 it refuses oversized requests cleanly with HTTP 400.
 
 **Why batch-size does not help with OOM:** Batch-size affects static compute buffer
 allocation at startup. The OOM crash is caused by flash attention's dynamic working
-memory during inference, which scales with sequence length regardless of batch-size.
-Confirmed by testing: batch-size 512 vs 1024 gives identical crash points.
+memory, which scales with sequence length regardless of batch-size.
+Confirmed: batch-size 512 vs 1024 gives identical crash points.
 
 ## OpenCode configuration
 
