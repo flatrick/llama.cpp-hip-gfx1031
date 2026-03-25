@@ -37,6 +37,27 @@ Build the image once (or after `Dockerfile.rocm` changes, use `--force` to rebui
 bash build.docker-rocm.sh
 ```
 
+> **Important — rebuild required after Dockerfile changes:** The image bakes in
+> `HSA_OVERRIDE_GFX_VERSION=10.3.0` and compiles GPU kernels for a specific target
+> (`gfx1030`). If you pull a newer version of this repo or change `Dockerfile.rocm`,
+> always rebuild with `--force`:
+>
+> - **Why we recompile at all:** using a pre-built llama.cpp binary and simply setting
+>   `HSA_OVERRIDE_GFX_VERSION` does not work — the binary uses auto-detection at
+>   runtime and still fails to find working GPU kernels for the device. The GPU target
+>   must be specified explicitly at compile time with `-DAMDGPU_TARGETS`. There is no
+>   shortcut.
+> - **Why we compile for `gfx1030` only** (changed from the earlier `gfx1030;gfx1031`):
+>   testing showed the GGML HIP backend's own gfx1031 kernels work for inference, but
+>   routing everything through the well-supported gfx1030 path via `HSA_OVERRIDE` is
+>   cleaner — smaller binary, faster compile, and avoids the broken rocBLAS gfx1031
+>   binaries entirely.
+> - **Why `HSA_OVERRIDE` is in the Dockerfile instead of the launch script:** it
+>   can no longer be accidentally omitted. An old image without this baked in,
+>   combined with a launch script that no longer passes `-e HSA_OVERRIDE_GFX_VERSION`,
+>   will run without the override — HIP will use gfx1031 kernels directly, which may
+>   work for inference but bypasses the intended gfx1030 code path.
+
 Then start the server:
 
 ```bash
@@ -138,8 +159,8 @@ Confirmed by testing: batch-size 512 vs 1024 gives identical crash points.
 
 | Entry | contextLength |
 |-------|--------------|
-| `local-llama/qwen-q4km` | 131072 |
-| `local-llama/qwen-udq4kxl` | 131072 |
+| `local-llama/qwen-q4km` | 40960 |
+| `local-llama/qwen-udq4kxl` | 40960 |
 
 Only one server runs at a time. Switch the `"model"` field in `opencode.json` to match
 whichever launcher you started.
@@ -218,20 +239,25 @@ difference is CU count and memory bus width.
 
 ### The fix
 
-Two things are required together:
+1. **Compile llama.cpp with `-DAMDGPU_TARGETS="gfx1030"`** — gfx1030 kernels are
+   ISA-identical to gfx1031 and work correctly.
 
-1. **Compile llama.cpp with `-DAMDGPU_TARGETS="gfx1030;gfx1031"`** so the binary
-   contains GPU kernels for both targets.
+2. **Set `HSA_OVERRIDE_GFX_VERSION=10.3.0`** so the HIP runtime presents the GPU as
+   gfx1030, making it use the working gfx1030 rocBLAS kernels. This is set as `ENV`
+   in the Dockerfile so it is always active regardless of how the container is run.
 
-2. **Set `HSA_OVERRIDE_GFX_VERSION=10.3.0` at runtime** so the HIP runtime presents
-   the GPU as gfx1030. This makes both the llama.cpp kernels (gfx1030 variant) and
-   the rocBLAS kernels (gfx1030, which actually load and work) get used.
+### What was discovered along the way
 
-Both are needed. Without the dual AMDGPU_TARGETS, the llama.cpp binary only has
-gfx1031 kernels and crashes when the override makes HIP look for gfx1030. Without
-the override, rocBLAS loads the broken gfx1031 binaries and crashes.
+**The GGML HIP backend with gfx1031 kernels actually works for inference** — tested
+by running the old dual-target binary without `HSA_OVERRIDE_GFX_VERSION` set. The
+GGML backend uses its own compiled kernels and does not route through the broken
+rocBLAS gfx1031 binaries. The rocBLAS issue only affects hipBLAS GEMM calls, which
+the GGML HIP backend avoids.
 
-### What does NOT work
+As a result, compiling for gfx1030 only (with the override) is the cleanest approach:
+smaller binary, faster compile, uses well-tested gfx1030 code paths throughout.
+
+**Earlier approaches that did not work (before settling on the current fix):**
 
 - `GGML_CUDA_FORCE_MMQ=1` — only redirects quantized-weight GEMMs; F16-weight
   tensors still route to hipBLAS and crash.
@@ -240,12 +266,10 @@ the override, rocBLAS loads the broken gfx1031 binaries and crashes.
 - Symlinking `TensileLibrary_lazy_gfx1031.dat` → `TensileLibrary_lazy_gfx1030.dat`
   inside the container — HIP won't load gfx1030 code objects on a gfx1031 device
   without `HSA_OVERRIDE_GFX_VERSION`.
-- `HSA_OVERRIDE_GFX_VERSION=10.3.0` alone with a gfx1031-only llama.cpp binary —
-  the binary has no gfx1030 kernels so HIP crashes looking for them.
 
 ### Inside Docker
 
 The base `rocm/dev-ubuntu-24.04` image contains only the standard rocBLAS with
-working gfx1030 kernels and no broken gfx1031 files. The override is injected via
-`-e HSA_OVERRIDE_GFX_VERSION=10.3.0` in the `docker run` command. No host-side
-ROCm packages (e.g. `rocblas-gfx1031-backend`) are needed or wanted.
+working gfx1030 kernels and no broken gfx1031 files. `HSA_OVERRIDE_GFX_VERSION=10.3.0`
+is set as `ENV` in the Dockerfile — no need to pass it at `docker run` time. No
+host-side ROCm packages (e.g. `rocblas-gfx1031-backend`) are needed or wanted.

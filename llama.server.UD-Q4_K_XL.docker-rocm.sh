@@ -15,7 +15,6 @@ fi
   --device /dev/dri \
   --group-add video \
   --group-add render \
-  -e HSA_OVERRIDE_GFX_VERSION=10.3.0 \
   -v "$HOME/.cache/huggingface:/root/.cache/huggingface" \
   -v "$HOME/.cache/llama.cpp:/root/.cache/llama.cpp" \
   -p 8080:8080 \
