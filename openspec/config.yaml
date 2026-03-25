@@ -1,0 +1,93 @@
+schema: spec-driven
+
+context: |
+  ## Purpose
+  This repo is a living compatibility guide for running llama.cpp with ROCm/HIP on an
+  AMD RX 6700 XT (gfx1031) on Arch Linux / EndeavourOS. It is verified only for gfx1031.
+  The setup breaks regularly due to Arch's rolling-release pace — kernel updates, ROCm
+  package updates, llama.cpp upstream changes, and HuggingFace repo changes can all break
+  things independently.
+
+  ## Hardware
+  - GPU: AMD RX 6700 XT 12GB (gfx1031)
+  - CPU: AMD Ryzen 5 5600X
+  - RAM: 32GB
+
+  ## gfx1031 / gfx1030 Relationship
+  gfx1031 (RX 6700 XT) and gfx1030 (RX 6800 XT) share the same RDNA2 ISA but ROCm treats
+  them differently. ROCm officially targets gfx1030; gfx1031 works nearly identically but:
+  - [2026-03] rocBLAS Tensile library ships gfx1030 but NOT gfx1031 in Arch's ROCm 7.2 package
+  - HSA_OVERRIDE_GFX_VERSION=10.3.0 was the historical workaround (maps gfx1031 → gfx1030)
+  - HSA_OVERRIDE is NOT used in any current launcher — on ROCm 7.2 it breaks HIP kernel lookup
+  - The rocBLAS gap affects only models with f16 tensors (e.g. UD-Q4_K_XL); Docker is the fix
+
+  ## Breakage Taxonomy
+  Things that can break this setup independently:
+  - Linux kernel update: amdgpu/KFD interface may shift
+  - ROCm package update: Arch ships bleeding edge; Tensile library content changes
+  - llama.cpp-hip AUR update: build flags, compile targets, or API flags change
+  - llama.cpp upstream change: CLI flags added/removed (e.g. --swa-full, --no-mmproj)
+  - HuggingFace model repo change: mmproj files added, model structure changes
+
+  ## Current Launcher Status
+  | Script                        | Status      | Reason                                      |
+  |-------------------------------|-------------|---------------------------------------------|
+  | llama.server.Q4_K_M.sh        | ✅ working   | All tensors use GGML kernels (no rocBLAS)   |
+  | llama.server.UD-Q4_K_XL.sh    | ❌ broken    | f16 tensors require rocBLAS (gfx1031 gap)   |
+  | *.docker-llamacpp.sh          | ❌ broken    | [2026-03] build 8496 slot-init segfault     |
+  | *.docker-rocm.sh              | 🔄 in progress | Build works; end-to-end not yet verified  |
+
+  ## Software Stack
+  - llama.cpp-hip (AUR): ROCm/HIP build, compiled for gfx1031
+  - Docker or Podman: containerised alternative; brings its own ROCm userspace
+  - OpenCode + @ai-sdk/openai-compatible: LLM client
+  - ROCm: 7.2.0 (host)
+
+  ## Model: Qwen3.5-9B
+  - Architecture: hybrid SSM/attention (Gated Delta Net) — NOT a pure transformer
+  - No SWA (n_swa=0, is_swa_any=0) — do not use --swa-full
+  - Only 8 of 32 layers have KV cache; KV stays small relative to context size
+  - Thinking mode is always on; needs max_tokens ≥ 1024 for simple tasks, ≥ 8192 for code
+  - Recurrent state cannot be partially cached — prompt cache only helps for exact prefix reuse
+  - [2026-03] Auto-downloads mmproj via -hf; use --no-mmproj (model is text-only)
+
+  ## VRAM Budget (gfx1031, 12272 MiB)
+  At ctx=131072, f16 KV, Q4_K_M:
+    model (4861) + KV (4096) + compute (493) + recurrent (50) ≈ 9500 MiB → ~2700 MiB headroom
+  At ctx=131072, f16 KV, UD-Q4_K_XL:
+    model (5133) + KV (4096) + compute (493) + recurrent (50) ≈ 9772 MiB → ~2245 MiB headroom
+  KV scales linearly with ctx; only 8 attention layers contribute.
+
+  ## Decision Logic
+  - Model has f16 tensors → native broken → use docker-rocm
+  - Model uses only q4_K/q5_K/q6_K/q8_0 → native works (no rocBLAS needed)
+  - Adding --cache-type-k/v q8_0 → crash on gfx1031 AUR build (HIP kernel not compiled)
+  - Increasing ctx-size → verify VRAM budget above stays within ~11000 MiB total
+  - Using -hf in Docker → requires LLAMA_CURL=ON in cmake build
+  - HSA_OVERRIDE suggested → reject; it breaks HIP kernel lookup on ROCm 7.2
+
+  ## Conventions
+  - Launcher scripts: llama.server.<model>.<variant>.sh
+  - Native scripts: --host 127.0.0.1
+  - Docker/Podman scripts: --host 0.0.0.0 with -p 8080:8080
+  - All scripts use -hf for model download
+  - Model cache: ~/.cache/llama.cpp/ — shared across all launchers via volume mount
+  - Container runtime auto-detected: $(command -v podman || command -v docker)
+
+rules:
+  proposal:
+    - Keep proposals concise — this is a small ops/infra repo, not a product
+    - Always note which launcher variants are affected (native / docker-llamacpp / docker-rocm)
+    - State whether the change affects the host system, the container, or both
+  specs:
+    - Use scenario-based verification (run script X, observe log output Y) not unit test language
+    - Each scenario should be reproducible on a fresh Arch/EOS install with the target hardware
+    - Prefer WHEN/THEN scenarios that reference specific log lines or exit codes as evidence
+  design:
+    - Only create design.md for changes spanning multiple scripts or introducing new Docker patterns
+    - Single-script or single-config changes do not need a design doc
+    - Always note the ROCm version and llama.cpp build number the design was validated against
+  tasks:
+    - Each task should map to a single script or config file change
+    - Include a verification step (run the affected script, check the log)
+    - Date-stamp any task that documents a version-specific workaround

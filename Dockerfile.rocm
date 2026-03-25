@@ -1,0 +1,27 @@
+FROM rocm/dev-ubuntu-24.04:latest
+
+RUN apt-get update && apt-get install -y \
+    cmake make g++ hipblas-dev libcurl4-openssl-dev git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Source is cloned on the host by the launcher script and copied in here,
+# avoiding any network dependency inside the Docker build sandbox.
+COPY llama.cpp-src /llama.cpp
+
+# gfx1031 (RX 6700 XT): rocBLAS ships broken gfx1031 kernel binaries that fail to
+# load at the HIP runtime level. gfx1030 kernels are ISA-identical and work correctly,
+# but HIP requires HSA_OVERRIDE_GFX_VERSION=10.3.0 at runtime to load them.
+# We compile for both targets so the binary works under the override.
+
+WORKDIR /llama.cpp
+
+RUN cmake -B build \
+    -DGGML_HIP=ON \
+    -DAMDGPU_TARGETS="gfx1030;gfx1031" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_PREFIX_PATH=/opt/rocm \
+    -DLLAMA_CURL=ON \
+    -DLLAMA_BUILD_BORINGSSL=ON \
+    && cmake --build build --target llama-server -j$(nproc)
+
+ENTRYPOINT ["/llama.cpp/build/bin/llama-server"]
