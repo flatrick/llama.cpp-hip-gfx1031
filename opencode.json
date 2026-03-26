@@ -8,20 +8,30 @@
         "apiKey": "dummy"
       },
       "models": {
-        "qwen-q4km": {
-          "name": "Qwen3.5-9B Q4_K_M",
+        "qwen-q4km-q4_0": {
+          "name": "Qwen3.5-9B Q4_K_M (q4_0 KV, ctx 57344)",
           "maxTokens": 16384,
           "contextLength": 40960
         },
-        "qwen-udq4kxl": {
-          "name": "Qwen3.5-9B UD-Q4_K_XL",
+        "qwen-q4km-q8_0": {
+          "name": "Qwen3.5-9B Q4_K_M (q8_0 KV, ctx 49152)",
           "maxTokens": 16384,
-          "contextLength": 40960
+          "contextLength": 32768
+        },
+        "qwen-udq4kxl-q4_0": {
+          "name": "Qwen3.5-9B UD-Q4_K_XL (q4_0 KV, ctx 49152)",
+          "maxTokens": 16384,
+          "contextLength": 32768
+        },
+        "qwen-udq4kxl-q8_0": {
+          "name": "Qwen3.5-9B UD-Q4_K_XL (q8_0 KV, ctx 45056)",
+          "maxTokens": 16384,
+          "contextLength": 28672
         }
       }
     }
   },
-  "model": "local-llama/qwen-q4km",
+  "model": "local-llama/qwen-udq4kxl-q8_0",
   "permission": {
     "bash": "ask",
     "edit": "allow",
