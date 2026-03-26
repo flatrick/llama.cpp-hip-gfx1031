@@ -61,11 +61,11 @@ bash build.docker-rocm.sh
 Then start the server:
 
 ```bash
-bash llama.server.Q4_K_M.docker-rocm.sh 2>&1 | tee llama.server.log
+bash Q4_K_M.docker-rocm.sh 2>&1 | tee llama.server.log
 ```
 
 ```bash
-bash llama.server.UD-Q4_K_XL.docker-rocm.sh 2>&1 | tee llama.server.log
+bash UD-Q4_K_XL.docker-rocm.sh 2>&1 | tee llama.server.log
 ```
 
 ## Configuration notes
@@ -277,5 +277,4 @@ smaller binary, faster compile, uses well-tested gfx1030 code paths throughout.
 
 The base `rocm/dev-ubuntu-24.04` image contains only the standard rocBLAS with
 working gfx1030 kernels and no broken gfx1031 files. `HSA_OVERRIDE_GFX_VERSION=10.3.0`
-is set as `ENV` in the Dockerfile — no need to pass it at `docker run` time. No
-host-side ROCm packages (e.g. `rocblas-gfx1031-backend`) are needed or wanted.
+is set as `ENV` in the Dockerfile — no need to pass it at `docker run` time.
