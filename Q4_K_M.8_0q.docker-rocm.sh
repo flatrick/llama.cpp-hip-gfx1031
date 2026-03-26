@@ -19,16 +19,16 @@ fi
   -v "$HOME/.cache/llama.cpp:/root/.cache/llama.cpp" \
   -p 8080:8080 \
   "$ROCM_IMAGE" \
-    --model-url "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-UD-Q4_K_XL.gguf" \
-    --ctx-size 65536 \
+    --model-url "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf" \
+    --ctx-size 49152 \
     --n-gpu-layers -1 \
     --batch-size 1024 \
     --ubatch-size 256 \
     --parallel 1 \
     --flash-attn on \
     --defrag-thold 0.1 \
-    --cache-type-k q4_0 \
-    --cache-type-v q4_0 \
+    --cache-type-k q8_0 \
+    --cache-type-v q8_0 \
     --jinja \
     --no-warmup \
     -cram 2048 \

@@ -17,17 +17,27 @@ No ROCm or llama.cpp packages needed on the host. The container brings its own R
 
 Currently using [Qwen3.5-9B-GGUF by unsloth.ai](https://huggingface.co/unsloth/Qwen3.5-9B-GGUF)
 
-Two quantizations are available — both are the same model weights at different
-precision:
+Two weight quantizations are available:
 
 | File | Weight size | Quality |
 |------|------------|---------|
 | `Qwen3.5-9B-Q4_K_M.gguf` | 5.3 GB | Standard Q4 |
-| `Qwen3.5-9B-UD-Q4_K_XL.gguf` | 5.6 GB | Higher quality Q4 variant |
+| `Qwen3.5-9B-UD-Q4_K_XL.gguf` | 5.6 GB | Higher quality Q4 variant (unsloth dynamic) |
+
+Each is paired with two KV cache precision options, giving four launch scripts:
+
+| Script | Weights | KV cache | ctx-size | Est. peak VRAM |
+|--------|---------|----------|----------|----------------|
+| `Q4_K_M.4_0q.docker-rocm.sh` | Q4_K_M | q4_0 | 57,344 | ~10.85 GB |
+| `Q4_K_M.8_0q.docker-rocm.sh` | Q4_K_M | q8_0 | 49,152 | ~10.67 GB |
+| `UD-Q4_K_XL.4_0q.docker-rocm.sh` | UD-Q4_K_XL | q4_0 | 49,152 | ~10.52 GB |
+| `UD-Q4_K_XL.8_0q.docker-rocm.sh` | UD-Q4_K_XL | q8_0 | 45,056 | ~10.66 GB |
+
+All four are kept under the 11 GB safety threshold (12 GB physical, ~1 GB headroom for
+driver overhead and other processes).
 
 GGUF metadata (read via `vram_calc.py`): 32 attention layers, 4 KV heads per layer,
-256 head dimension. Note: an earlier version of this README incorrectly stated "8 of
-32 layers use a KV cache" — that was wrong. All 32 layers use attention with GQA.
+256 head dimension. All 32 layers use attention with GQA.
 
 ## Starting the server
 
@@ -58,14 +68,13 @@ bash build.docker-rocm.sh
 >   will run without the override — HIP will use gfx1031 kernels directly, which may
 >   work for inference but bypasses the intended gfx1030 code path.
 
-Then start the server:
+Then start the server with one of the four scripts:
 
 ```bash
-bash Q4_K_M.docker-rocm.sh 2>&1 | tee llama.server.log
-```
-
-```bash
-bash UD-Q4_K_XL.docker-rocm.sh 2>&1 | tee llama.server.log
+bash Q4_K_M.4_0q.docker-rocm.sh 2>&1 | tee llama.server.log
+bash Q4_K_M.8_0q.docker-rocm.sh 2>&1 | tee llama.server.log
+bash UD-Q4_K_XL.4_0q.docker-rocm.sh 2>&1 | tee llama.server.log
+bash UD-Q4_K_XL.8_0q.docker-rocm.sh 2>&1 | tee llama.server.log
 ```
 
 ## Configuration notes
@@ -90,73 +99,90 @@ bash UD-Q4_K_XL.docker-rocm.sh 2>&1 | tee llama.server.log
 
 ## Measured VRAM limits (RX 6700 XT 12 GB)
 
-Tested with `stress_test.py` using both models under identical settings
-(`--ctx-size 131072 --cache-type-k q4_0 --cache-type-v q4_0 --batch-size 1024`):
+Tested with `stress_test.py` (progressive context fill up to ~62K tokens, then 5 rounds
+of sustained load at peak size). All four configs ran at `--ctx-size 65536` during
+measurement; ctx-sizes were then reduced to keep peak VRAM under 11 GB.
 
-Tested with `--ctx-size 65536 --ubatch-size 256 --cache-type-k q4_0 --batch-size 1024`:
+### Baseline VRAM (model weights + pre-allocated KV cache)
 
-| prompt tokens | Q4_K_M VRAM | UD-Q4_K_XL VRAM |
-|--------------|-------------|-----------------|
-| baseline (idle) | 6.39 GB | 6.66 GB |
-| ~32K | 9.45 GB | 9.76 GB |
-| ~48K | ctx-size limit (HTTP 400) | ctx-size limit (HTTP 400) |
+| Config | Baseline |
+|--------|----------|
+| Q4_K_M + q4_0 | 6.79 GB |
+| Q4_K_M + q8_0 | 7.24 GB |
+| UD-Q4_K_XL + q4_0 | 7.06 GB |
+| UD-Q4_K_XL + q8_0 | 7.53 GB |
 
-The server now refuses requests that exceed ctx-size with a clean HTTP 400 rather
-than crashing. The practical single-request limit is ~57–60K tokens (ctx-size 65536
-minus headroom for the response).
+### VRAM at ~62K prompt tokens (ctx-size 65536)
 
-Earlier testing at ctx-size 131072 showed OOM crashes in flash attention's tile
-allocator (`launch_fattn`) at ~74K cumulative tokens. That is the underlying hardware
-limit — reducing ctx-size to 65536 means the server refuses before reaching it.
-Model variant makes no practical difference to either limit.
+| Config | Peak VRAM | Gen speed | Sustained 5× |
+|--------|-----------|-----------|--------------|
+| Q4_K_M + q4_0 | 11.12 GB | 23.8 tok/s | ✓ |
+| Q4_K_M + q8_0 | 11.57 GB | 26.2 tok/s | ✓ |
+| UD-Q4_K_XL + q4_0 | 11.43 GB | 23.6 tok/s | ✓ |
+| UD-Q4_K_XL + q8_0 | 11.84 GB | 25.0 tok/s | ✓ |
 
-The VRAM grows during inference because flash attention needs working memory that
-scales with sequence length. The KV cache allocates dynamically as context fills
-(not pre-allocated at startup) — reducing ctx-size freed ~1 GB at baseline.
+All four configs passed the full ramp and sustained load. The earlier failure of
+Q4_K_M + q8_0 was due to ~3 GB of VRAM already in use by another process at the time
+of testing — not a model or configuration issue.
+
+### ctx-size limits derived from measurements (target: peak < 11 GB)
+
+| Config | Safe ctx-size | Est. peak | Headroom |
+|--------|--------------|-----------|----------|
+| Q4_K_M + q4_0 | 57,344 | ~10.85 GB | ~0.15 GB |
+| Q4_K_M + q8_0 | 49,152 | ~10.67 GB | ~0.33 GB |
+| UD-Q4_K_XL + q4_0 | 49,152 | ~10.52 GB | ~0.48 GB |
+| UD-Q4_K_XL + q8_0 | 45,056 | ~10.66 GB | ~0.34 GB |
 
 ## Tuning guide
 
 Use `vram_calc.py` to estimate the effect of changes before applying them.
-Run `stress_test.py` after changes to measure the real impact.
+Run `stress_test.py` after changes to measure the real impact. Pass `CTX_SIZE=N` to
+match the server's actual `--ctx-size` so the test steps bracket the real limit:
+
+```bash
+CTX_SIZE=49152 sudo python stress_test.py
+```
 
 ### Parameters and trade-offs
 
 | Parameter | Increase | Decrease |
 |-----------|----------|----------|
-| `--ctx-size` | More conversation history; server refuses oversized requests gracefully | Less history; lower baseline VRAM (~1 GB freed going 131072→65536) |
-| `--ubatch-size` | Fewer GPU dispatches per batch, faster prefill | Smaller FA working memory per dispatch; may push OOM boundary higher |
-| `--cache-type-k/v` | `q8_0` = better recall quality, more VRAM; `q4_0` = half the VRAM, slightly fuzzier recall of old tokens | — |
-| `--batch-size` | Faster prompt processing (prefill) | Slower prefill; does NOT change the OOM crash point |
+| `--ctx-size` | More conversation history; server refuses oversized requests gracefully | Less history; lower baseline VRAM |
+| `--ubatch-size` | Fewer GPU dispatches per batch, faster prefill | Smaller FA working memory per dispatch |
+| `--cache-type-k/v` | `q8_0` = ~2 tok/s faster decode, more VRAM; `q4_0` = half the KV cache, slightly fuzzier recall of old tokens | — |
+| `--batch-size` | Faster prompt processing (prefill) | Slower prefill; does NOT change the OOM boundary |
 | `--flash-attn` | `on` = lower VRAM for long contexts, faster; `off` = more VRAM (full attention matrix), slower | — |
 
-### Current settled config (both models)
+### q4_0 vs q8_0 KV cache
+
+**q8_0 is ~2 tok/s faster** than q4_0 at the same model, consistently across both
+weight variants. The GPU decodes 8-bit aligned data more efficiently — better memory
+bandwidth utilisation during the decode phase outweighs the smaller cache size of q4_0.
+
+The trade-off is context window: q8_0's larger KV cache costs ~8K tokens of ctx budget
+compared to q4_0 at the same VRAM limit. Choose based on what matters more for your
+workload — longer context or faster generation.
+
+### Current configs (all four scripts)
 
 ```
---ctx-size 65536        # contextLength (40960) + maxTokens (16384) = 57344; fits in 65536
 --ubatch-size 256       # smaller FA tile dispatch; reduces peak working memory
---cache-type-k q4_0     # q8_0 would need ~8 GB KV cache at 131072 ctx — OOM
---cache-type-v q4_0     # kept q4_0 even at 65536 ctx for headroom
 --batch-size 1024       # faster prefill; startup VRAM unaffected vs 512
---flash-attn on         # required at this context size
+--flash-attn on         # required at these context sizes
 --defrag-thold 0.1      # prevents fragmentation during long agentic sessions
 --no-warmup             # defers buffer allocation to first inference
+--parallel 1            # single slot; no multi-user overhead
 ```
 
-**Why q4_0 and not q8_0:** q8_0 KV cache at 65536 ctx needs ~2 GB; combined with
-model weights (~5.5 GB) it fits, but leaves only ~4 GB for FA working memory — tight
-given the measured OOM boundary. q4_0 halves the KV cache to ~1 GB and gives more
-headroom. The quality tradeoff is minor: slightly imprecise recall of old tokens.
-Mitigate by having the agent write important details to disk rather than relying on
-long-range attention recall.
+Per-script ctx-size and cache-type:
 
-**Why ctx-size 65536 and not 131072:** Reducing ctx-size freed ~1 GB at baseline and
-aligns with the opencode.json limits. More importantly, at 131072 the server would OOM
-crash mid-inference; at 65536 it refuses oversized requests cleanly with HTTP 400.
-
-**Why batch-size does not help with OOM:** Batch-size affects static compute buffer
-allocation at startup. The OOM crash is caused by flash attention's dynamic working
-memory, which scales with sequence length regardless of batch-size.
-Confirmed: batch-size 512 vs 1024 gives identical crash points.
+| Script | ctx-size | cache-type-k/v |
+|--------|----------|----------------|
+| Q4_K_M.4_0q | 57,344 | q4_0 |
+| Q4_K_M.8_0q | 49,152 | q8_0 |
+| UD-Q4_K_XL.4_0q | 49,152 | q4_0 |
+| UD-Q4_K_XL.8_0q | 45,056 | q8_0 |
 
 ## OpenCode configuration
 

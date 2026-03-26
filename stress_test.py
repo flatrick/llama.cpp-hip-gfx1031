@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
 Stress test for llama-server: sends progressively larger prompts,
-reports VRAM usage and timing after each step.
-Stops at first failure or when the target context size is reached.
+reports VRAM usage and timing after each step, then hammers the server
+with repeated near-full-context requests to surface memory fragmentation.
+
+Override context window: CTX_SIZE=32768 python stress_test.py
 """
 
 import collections
@@ -20,13 +22,26 @@ import urllib.request
 # ---------------------------------------------------------------------------
 
 API_URL    = "http://127.0.0.1:8080/v1/chat/completions"
-MAX_TOKENS = 64          # generation length — keep short, we're testing prefill
+MAX_TOKENS = 256         # generation length — longer to stress KV cache during decode
 TIMEOUT    = 300         # seconds per request
 
-# Prompt sizes to test (in approximate tokens).
-# Each step fills the context a bit more.
-STEPS = [4_000, 8_000, 16_000, 24_000, 32_000, 48_000, 64_000,
-         80_000, 96_000, 112_000, 124_000]
+# Server ctx-size. Steps are generated relative to this so we bracket the
+# actual limit rather than wasting time on sizes that will always fail.
+CTX_SIZE = int(__import__("os").environ.get("CTX_SIZE", "65536"))
+
+# Prompt sizes: ramp up to ~95% of ctx, leaving room for generated tokens.
+# Fine-grained near the limit to find the exact breaking point.
+_cap = int(CTX_SIZE * 0.95) - MAX_TOKENS
+STEPS = sorted(set([
+    4_000, 8_000, 16_000, 24_000, 32_000,
+    CTX_SIZE // 4, CTX_SIZE // 2, int(CTX_SIZE * 0.70),
+    int(CTX_SIZE * 0.80), int(CTX_SIZE * 0.88),
+    int(CTX_SIZE * 0.92), _cap,
+]))
+
+# After the ramp, hammer the server with this many back-to-back requests at
+# the largest successful prompt size to surface memory leaks / fragmentation.
+SUSTAINED_ROUNDS = 5
 
 # Filler text repeated to reach target token count.
 # ~200 words ≈ ~270 tokens (ratio 1.35 tokens/word is typical for code+prose).
@@ -41,7 +56,7 @@ Always validate inputs at system boundaries before processing user-supplied data
 The database query returned 42 rows matching the filter criteria applied. \
 """ * 3   # ~270 tokens per repetition of the above block
 
-TOKENS_PER_CHUNK = 270   # approximate; adjust if model tokenises differently
+TOKENS_PER_CHUNK = 381   # measured: Qwen3.5 tokenises this filler at ~381 tok/chunk
 
 
 # ---------------------------------------------------------------------------
@@ -189,8 +204,11 @@ def main():
     print("=" * 65)
     print("  llama-server stress test — progressive context fill")
     print("=" * 65)
-    print(f"  API : {API_URL}")
-    print(f"  Steps: {STEPS}")
+    print(f"  API      : {API_URL}")
+    print(f"  CTX_SIZE : {CTX_SIZE:,}  (override with CTX_SIZE=N)")
+    print(f"  Steps    : {STEPS}")
+    print(f"  Max gen  : {MAX_TOKENS} tokens/request")
+    print(f"  Sustained: {SUSTAINED_ROUNDS} rounds at peak size")
     print()
 
     # Verify server is up
@@ -269,7 +287,54 @@ def main():
     if log_reader:
         log_reader.stop()
     print()
-    print(f"All steps passed. Last tested: ~{last_ok_tokens:,} tokens.")
+    print(f"All ramp steps passed. Last tested: ~{last_ok_tokens:,} tokens.")
+
+    if last_ok_tokens == 0:
+        return
+
+    # ------------------------------------------------------------------
+    # Sustained-load phase: repeated near-full-context requests
+    # ------------------------------------------------------------------
+    print()
+    print("=" * 65)
+    print(f"  Sustained load — {SUSTAINED_ROUNDS} rounds at ~{last_ok_tokens:,} tokens")
+    print("=" * 65)
+    print(f"  {'round':>6}  {'prefill':>10}  {'gen tok/s':>10}  {'VRAM':>9}  status")
+    print(f"  {'─'*6}  {'─'*10}  {'─'*10}  {'─'*9}  ──────")
+
+    sustained_prompt = build_prompt(last_ok_tokens)
+    runtime = find_runtime()
+    if runtime:
+        cid = find_container_id(runtime)
+        log_reader2 = ContainerLogReader(runtime, cid) if cid else None
+    else:
+        log_reader2 = None
+
+    for i in range(1, SUSTAINED_ROUNDS + 1):
+        try:
+            resp, elapsed = send_request(sustained_prompt)
+        except Exception as e:
+            vram = vram_used_gb()
+            print(f"  {i:>6}  {'—':>10}  {'—':>10}  {fmt_vram(vram):>9}  FAIL {e}")
+            time.sleep(1)
+            if log_reader2:
+                log_reader2.dump()
+                log_reader2.stop()
+            return
+
+        timings  = resp.get("timings", {})
+        gen_tps  = timings.get("predicted_per_second", None)
+        gen_str  = f"{gen_tps:.1f}" if gen_tps else "—"
+        pp_tps   = timings.get("prompt_per_second", None)
+        pp_str   = f"{timings.get('prompt_n','?')}t/{elapsed:.1f}s" if pp_tps else f"{elapsed:.1f}s"
+        vram     = vram_used_gb()
+        print(f"  {i:>6}  {pp_str:>10}  {gen_str:>10}  {fmt_vram(vram):>9}  OK")
+        time.sleep(1)
+
+    if log_reader2:
+        log_reader2.stop()
+    print()
+    print("Sustained load passed — no fragmentation or OOM detected.")
 
 
 if __name__ == "__main__":
