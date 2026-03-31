@@ -2,11 +2,12 @@ schema: spec-driven
 
 context: |
   ## Purpose
-  This repo is a living compatibility guide for running llama.cpp with ROCm/HIP on an
-  AMD RX 6700 XT (gfx1031) on Arch Linux / EndeavourOS. It is verified only for gfx1031.
-  The setup breaks regularly due to Arch's rolling-release pace — kernel updates, ROCm
-  package updates, llama.cpp upstream changes, and HuggingFace repo changes can all break
-  things independently.
+  This repo is a living compatibility guide for running OpenCode against a local
+  llama.cpp server on an AMD RX 6700 XT (gfx1031) on Arch Linux / EndeavourOS.
+  The current documented path is container-first: build `llama-cpp-gfx1031:latest`
+  with `build.docker-rocm.sh`, then run one of the `*.docker-rocm.sh` launchers.
+  It is verified only for gfx1031. The setup can break due to Arch's rolling-release
+  pace, ROCm container updates, llama.cpp changes, and HuggingFace repo changes.
 
   ## Hardware
   - GPU: AMD RX 6700 XT 12GB (gfx1031)
@@ -15,33 +16,39 @@ context: |
 
   ## gfx1031 / gfx1030 Relationship
   gfx1031 (RX 6700 XT) and gfx1030 (RX 6800 XT) share the same RDNA2 ISA but ROCm treats
-  them differently. ROCm officially targets gfx1030; gfx1031 works nearly identically but:
-  - [2026-03] rocBLAS Tensile library ships gfx1030 but NOT gfx1031 in Arch's ROCm 7.2 package
-  - HSA_OVERRIDE_GFX_VERSION=10.3.0 was the historical workaround (maps gfx1031 → gfx1030)
-  - HSA_OVERRIDE is NOT used in any current launcher — on ROCm 7.2 it breaks HIP kernel lookup
-  - The rocBLAS gap affects only models with f16 tensors (e.g. UD-Q4_K_XL); Docker is the fix
+  them differently. The current repo works around that by compiling llama.cpp for
+  gfx1030 inside the container and baking in `HSA_OVERRIDE_GFX_VERSION=10.3.0`:
+  - [2026-03] rocBLAS ships broken or missing gfx1031 kernel binaries; gfx1030 is the stable path
+  - `Dockerfile.rocm` sets `HSA_OVERRIDE_GFX_VERSION=10.3.0` and `-DAMDGPU_TARGETS=gfx1030`
+  - Do not suggest the old host-native `llama.cpp-hip` / AUR flow as the default path for this repo
+  - If `Dockerfile.rocm` changes, rebuild with `bash build.docker-rocm.sh --force`
 
   ## Breakage Taxonomy
   Things that can break this setup independently:
-  - Linux kernel update: amdgpu/KFD interface may shift
-  - ROCm package update: Arch ships bleeding edge; Tensile library content changes
-  - llama.cpp-hip AUR update: build flags, compile targets, or API flags change
-  - llama.cpp upstream change: CLI flags added/removed (e.g. --swa-full, --no-mmproj)
-  - HuggingFace model repo change: mmproj files added, model structure changes
+  - Linux kernel / permissions change: `/dev/kfd`, `/dev/dri`, `video`, or `render` access may break
+  - ROCm container base update: `rocm/dev-ubuntu-24.04:latest` may change build or runtime behaviour
+  - llama.cpp submodule update: CLI flags, performance, or ROCm behaviour may shift
+  - Dockerfile change: `AMDGPU_TARGETS`, `LLAMA_CURL`, or entrypoint behaviour may change
+  - HuggingFace model repo change: model URLs, filenames, or templates may move
+  - VRAM tuning change: `--ctx-size` / KV-cache settings can OOM even when the build succeeds
 
   ## Current Launcher Status
-  | Script                        | Status      | Reason                                      |
-  |-------------------------------|-------------|---------------------------------------------|
-  | llama.server.Q4_K_M.sh        | ✅ working   | All tensors use GGML kernels (no rocBLAS)   |
-  | llama.server.UD-Q4_K_XL.sh    | ❌ broken    | f16 tensors require rocBLAS (gfx1031 gap)   |
-  | *.docker-llamacpp.sh          | ❌ broken    | [2026-03] build 8496 slot-init segfault     |
-  | *.docker-rocm.sh              | 🔄 in progress | Build works; end-to-end not yet verified  |
+  | Script                        | Status       | Reason                                          |
+  |-------------------------------|--------------|-------------------------------------------------|
+  | build.docker-rocm.sh          | ✅ working    | Builds or reuses `llama-cpp-gfx1031:latest`     |
+  | Q4_K_M.4_0q.docker-rocm.sh    | ✅ working    | Main q4_0 profile; longest documented ctx       |
+  | Q4_K_M.8_0q.docker-rocm.sh    | ✅ working    | Main q8_0 profile; slightly faster decode       |
+  | UD-Q4_K_XL.4_0q.docker-rocm.sh| ✅ working    | Higher-quality weights with q4_0 KV             |
+  | UD-Q4_K_XL.8_0q.docker-rocm.sh| ✅ working    | Higher-quality weights with q8_0 KV             |
+  | chatml.Q4_K_M.docker-rocm.sh  | ⚠️ secondary  | Present for chatml-specific runs; not the main README path |
+  | chatml.UD-Q4_K_XL.docker-rocm.sh | ⚠️ secondary | Present for chatml-specific runs; not the main README path |
 
   ## Software Stack
-  - llama.cpp-hip (AUR): ROCm/HIP build, compiled for gfx1031
-  - Docker or Podman: containerised alternative; brings its own ROCm userspace
+  - Docker or Podman: required on the host; the container brings ROCm userspace and `llama-server`
+  - `Dockerfile.rocm`: builds llama.cpp from the pinned submodule for `gfx1030`
+  - `llama.cpp-src/`: git submodule used as the source tree for container builds
   - OpenCode + @ai-sdk/openai-compatible: LLM client
-  - ROCm: 7.2.0 (host)
+  - Host GPU driver: Arch / EndeavourOS kernel with `amdgpu` access to `/dev/kfd` and `/dev/dri`
 
   ## Model: Qwen3.5-9B
   - Architecture: hybrid SSM/attention (Gated Delta Net) — NOT a pure transformer
@@ -49,35 +56,39 @@ context: |
   - Only 8 of 32 layers have KV cache; KV stays small relative to context size
   - Thinking mode is always on; needs max_tokens ≥ 1024 for simple tasks, ≥ 8192 for code
   - Recurrent state cannot be partially cached — prompt cache only helps for exact prefix reuse
-  - [2026-03] Auto-downloads mmproj via -hf; use --no-mmproj (model is text-only)
+  - Launchers use `--model-url` directly; `LLAMA_CURL=ON` in the container build is required
+  - Repo-standard runtime flags: `--flash-attn on`, `--batch-size 1024`, `--ubatch-size 256`, `--parallel 1`, `--no-warmup`, `-cram 2048`
 
-  ## VRAM Budget (gfx1031, 12272 MiB)
-  At ctx=131072, f16 KV, Q4_K_M:
-    model (4861) + KV (4096) + compute (493) + recurrent (50) ≈ 9500 MiB → ~2700 MiB headroom
-  At ctx=131072, f16 KV, UD-Q4_K_XL:
-    model (5133) + KV (4096) + compute (493) + recurrent (50) ≈ 9772 MiB → ~2245 MiB headroom
-  KV scales linearly with ctx; only 8 attention layers contribute.
+  ## VRAM Budget (gfx1031, 12 GB card, ~11 GB safety target)
+  Current documented launch profiles:
+  - `Q4_K_M.4_0q.docker-rocm.sh`: ctx=57344, q4_0 KV, ~10.85 GB peak
+  - `Q4_K_M.8_0q.docker-rocm.sh`: ctx=49152, q8_0 KV, ~10.67 GB peak
+  - `UD-Q4_K_XL.4_0q.docker-rocm.sh`: ctx=49152, q4_0 KV, ~10.52 GB peak
+  - `UD-Q4_K_XL.8_0q.docker-rocm.sh`: ctx=45056, q8_0 KV, ~10.66 GB peak
+  q8_0 decodes faster but costs more KV VRAM; q4_0 allows a larger context window.
 
   ## Decision Logic
-  - Model has f16 tensors → native broken → use docker-rocm
-  - Model uses only q4_K/q5_K/q6_K/q8_0 → native works (no rocBLAS needed)
-  - Adding --cache-type-k/v q8_0 → crash on gfx1031 AUR build (HIP kernel not compiled)
-  - Increasing ctx-size → verify VRAM budget above stays within ~11000 MiB total
-  - Using -hf in Docker → requires LLAMA_CURL=ON in cmake build
-  - HSA_OVERRIDE suggested → reject; it breaks HIP kernel lookup on ROCm 7.2
+  - Image missing → run `bash build.docker-rocm.sh`
+  - `Dockerfile.rocm` or `llama.cpp-src` changed → run `bash build.docker-rocm.sh --force`
+  - Need longer context → prefer the `*.4_0q.docker-rocm.sh` profiles
+  - Need slightly faster decode → prefer the `*.8_0q.docker-rocm.sh` profiles
+  - Need better quality weights → choose `UD-Q4_K_XL.*`; need lower VRAM pressure → choose `Q4_K_M.*`
+  - Suggesting host-native ROCm / `llama.cpp-hip` as the default workflow → treat as stale for this repo
+  - HuggingFace download inside the container → requires `LLAMA_CURL=ON` and the current `--model-url` path
 
   ## Conventions
-  - Launcher scripts: llama.server.<model>.<variant>.sh
-  - Native scripts: --host 127.0.0.1
-  - Docker/Podman scripts: --host 0.0.0.0 with -p 8080:8080
-  - All scripts use -hf for model download
-  - Model cache: ~/.cache/llama.cpp/ — shared across all launchers via volume mount
+  - Build script: `build.docker-rocm.sh`
+  - Standard launchers: `<weights>.<kv>.docker-rocm.sh`
+  - ChatML launchers: `chatml.<weights>.docker-rocm.sh`
+  - Docker/Podman scripts bind `0.0.0.0:8080` and auto-detect `podman` or `docker`
+  - Model cache: `~/.cache/huggingface/` and `~/.cache/llama.cpp/` are mounted into the container
+  - Image name: `llama-cpp-gfx1031:latest`
   - Container runtime auto-detected: $(command -v podman || command -v docker)
 
 rules:
   proposal:
     - Keep proposals concise — this is a small ops/infra repo, not a product
-    - Always note which launcher variants are affected (native / docker-llamacpp / docker-rocm)
+    - Always note which scripts are affected (`build.docker-rocm.sh`, standard `*.docker-rocm.sh`, or `chatml.*.docker-rocm.sh`)
     - State whether the change affects the host system, the container, or both
   specs:
     - Use scenario-based verification (run script X, observe log output Y) not unit test language

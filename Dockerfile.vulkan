@@ -1,0 +1,42 @@
+# Vulkan backend build for llama.cpp.
+# Uses the official Vulkan SDK image for build-time dependencies (glslc, headers)
+# and Mesa's RADV driver at runtime via /dev/dri passthrough from the host.
+FROM ubuntu:24.04 AS builder
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    cmake ninja-build g++ \
+    libvulkan-dev glslc \
+    libcurl4-openssl-dev git \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY llama.cpp-src /llama.cpp
+
+WORKDIR /llama.cpp
+
+RUN cmake -S . -B build -G Ninja \
+    -DGGML_VULKAN=ON \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DLLAMA_CURL=ON \
+    -DLLAMA_BUILD_BORINGSSL=ON \
+    && cmake --build build --target llama-server -j$(nproc)
+
+# Runtime stage — keep it small, no build tools needed.
+FROM ubuntu:24.04
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libvulkan1 \
+    mesa-vulkan-drivers \
+    libcurl4t64 \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /llama.cpp/build/bin/llama-server /usr/local/bin/llama-server
+COPY --from=builder /llama.cpp/build/bin/*.so* /usr/local/lib/
+
+ENV LD_LIBRARY_PATH=/usr/local/lib
+RUN ldconfig
+
+ENTRYPOINT ["llama-server"]

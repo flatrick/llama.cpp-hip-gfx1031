@@ -1,4 +1,4 @@
-ROCM_IMAGE="llama-cpp-gfx1031:latest"
+ROCM_IMAGE="${ROCM_IMAGE:-llama-cpp-gfx1031:latest}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 RUNTIME=$(command -v podman || command -v docker)
@@ -19,16 +19,20 @@ fi
   -v "$HOME/.cache/llama.cpp:/root/.cache/llama.cpp" \
   -p 8080:8080 \
   "$ROCM_IMAGE" \
-    --model-url "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf" \
-    --ctx-size 57344 \
+    -hf "unsloth/Qwen3.5-4B-GGUF:UD-Q5_K_XL" \
+    --ctx-size 81920 \
     --n-gpu-layers -1 \
     --batch-size 1024 \
     --ubatch-size 256 \
     --parallel 1 \
     --flash-attn on \
-    --defrag-thold 0.1 \
-    --cache-type-k q4_0 \
-    --cache-type-v q4_0 \
+    --no-mmproj \
+    --cache-type-k q8_0 \
+    --cache-type-v q8_0 \
+    --top-k 20 \
+    --top-p 0.8 \
+    --temp 0.7 \
+    --presence-penalty 1.5 \
     --jinja \
     --no-warmup \
     -cram 2048 \

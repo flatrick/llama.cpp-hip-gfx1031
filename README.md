@@ -1,215 +1,199 @@
-# How I run OpenCode with a local LLM
+# Running OpenCode Against a Local llama.cpp Server
 
-## Environment
+This repository contains containerized `llama-server` setups for running local
+models on an AMD RX 6700 XT with ROCm or Vulkan, plus helper scripts for VRAM
+planning and stress testing.
 
-- OS: EndeavourOS/Arch Linux
-- CPU: AMD Ryzen 5 5600X
-- RAM: 32GB
-- GPU: AMD RX 6700 XT 12GB (gfx1031)
+The old README described four Q4 launchers that are no longer in this repo. The
+current checked-in setup is centered on a pinned `llama.cpp` submodule, ROCm
+and Vulkan Docker build flows, a few launcher scripts, a checked-in
+`opencode.json`, and a couple of helper utilities.
 
-## Prerequisites
+## Current repository contents
 
-No ROCm or llama.cpp packages needed on the host. The container brings its own ROCm userspace and llama.cpp binary. You only need:
+Top-level files that matter for actually using this repo:
 
-- Docker or Podman (the `amdgpu` kernel driver is already built into the Arch kernel)
+| File | What it does |
+|------|--------------|
+| `Dockerfile.rocm` | Builds a ROCm-based container image with `llama-server` compiled from the pinned `llama.cpp-src` submodule |
+| `Dockerfile.vulkan` | Builds a Vulkan-based container image with `llama-server` compiled from the pinned `llama.cpp-src` submodule |
+| `build.docker-rocm.sh` | Initializes the submodule if needed and builds a named ROCm image from a selected local llama.cpp checkout |
+| `build.docker-vulkan.sh` | Initializes the submodule if needed and builds a named Vulkan image from a selected local llama.cpp checkout |
+| `build.llama-ref.docker-rocm.sh` | Clones an upstream llama.cpp ref into `/tmp` and builds it as a separate ROCm test image without touching the pinned submodule |
+| `build.llama-ref.docker-vulkan.sh` | Clones an upstream llama.cpp ref into `/tmp` and builds it as a separate Vulkan test image without touching the pinned submodule |
+| `Qwen3.5-0.8B-UD-Q5_K_XL.230k.b8495.sh` | Starts the 0.8B Qwen ROCm model with a 230k context window (verified stable, 11.28 GB VRAM) |
+| `Qwen3.5-2B-UD-Q5_K_XL.200k.b8495.sh` | Starts the 2B Qwen ROCm model with a 200k context window (verified stable, 11.06 GB VRAM) |
+| `Qwen3.5-4B-UD-Q5_K_XL.82k.b8495.sh` | Starts the 4B Qwen ROCm model with an 82k context window tuned for this GPU |
+| `Qwen3.5-9B-UD-Q5_K_XL.thinking.general.52k.b8495.sh` | Starts the 9B Qwen ROCm model with a 52k context window |
+| `Qwen3.5-*-FULL.vulkan.sh` | Starts Vulkan launchers at the model's full 262,144-token context window |
+| `opencode.json` | OpenCode config pointing at `http://127.0.0.1:8080/v1` |
+| `vram_calc.py` | Interactive VRAM estimator that can read GGUF metadata from the local Hugging Face cache |
+| `stress_test.py` | Thin CLI entrypoint for the multi-phase llama-server stress harness |
+| `stress_harness/` | Reusable Python package with config, server/watchdog, runtime, VRAM, phase, and reporting logic |
+| `tests/stress_harness/` | Lightweight `unittest` coverage for the refactored stress harness |
+| `docs/tuning-guide.md` | Longer notes on tuning llama.cpp parameters |
+| `docs/stress-test-results.md` | Verified stress test results per model/context configuration |
 
-## LLM models
+The `llama.cpp-src` directory is a git submodule currently pinned to commit
+`7cadbfce10fc16032cfb576ca4607cd2dd183bf1`.
 
-Currently using [Qwen3.5-9B-GGUF by unsloth.ai](https://huggingface.co/unsloth/Qwen3.5-9B-GGUF)
+## Host environment
 
-Two weight quantizations are available:
+This repo was built around:
 
-| File | Weight size | Quality |
-|------|------------|---------|
-| `Qwen3.5-9B-Q4_K_M.gguf` | 5.3 GB | Standard Q4 |
-| `Qwen3.5-9B-UD-Q4_K_XL.gguf` | 5.6 GB | Higher quality Q4 variant (unsloth dynamic) |
+- EndeavourOS / Arch Linux
+- AMD Ryzen 5 5600X
+- 32 GB RAM
+- AMD RX 6700 XT 12 GB (`gfx1031`)
 
-Each is paired with two KV cache precision options, giving four launch scripts:
+You do not need host-side ROCm packages for this setup. The container carries its
+own ROCm userspace and compiled `llama-server` binary. You do need:
 
-| Script | Weights | KV cache | ctx-size | Est. peak VRAM |
-|--------|---------|----------|----------|----------------|
-| `Q4_K_M.4_0q.docker-rocm.sh` | Q4_K_M | q4_0 | 57,344 | ~10.85 GB |
-| `Q4_K_M.8_0q.docker-rocm.sh` | Q4_K_M | q8_0 | 49,152 | ~10.67 GB |
-| `UD-Q4_K_XL.4_0q.docker-rocm.sh` | UD-Q4_K_XL | q4_0 | 49,152 | ~10.52 GB |
-| `UD-Q4_K_XL.8_0q.docker-rocm.sh` | UD-Q4_K_XL | q8_0 | 45,056 | ~10.66 GB |
+- `podman` or `docker`
+- access to `/dev/kfd` and `/dev/dri`
+- membership in the host `video` and `render` groups
 
-All four are kept under the 11 GB safety threshold (12 GB physical, ~1 GB headroom for
-driver overhead and other processes).
+## Build the image
 
-GGUF metadata (read via `vram_calc.py`): 32 attention layers, 4 KV heads per layer,
-256 head dimension. All 32 layers use attention with GQA.
-
-## Starting the server
-
-Build the image once (or after `Dockerfile.rocm` changes, use `--force` to rebuild):
+Build the ROCm container image once:
 
 ```bash
 bash build.docker-rocm.sh
 ```
 
-> **Important — rebuild required after Dockerfile changes:** The image bakes in
-> `HSA_OVERRIDE_GFX_VERSION=10.3.0` and compiles GPU kernels for a specific target
-> (`gfx1030`). If you pull a newer version of this repo or change `Dockerfile.rocm`,
-> always rebuild with `--force`:
->
-> - **Why we recompile at all:** using a pre-built llama.cpp binary and simply setting
->   `HSA_OVERRIDE_GFX_VERSION` does not work — the binary uses auto-detection at
->   runtime and still fails to find working GPU kernels for the device. The GPU target
->   must be specified explicitly at compile time with `-DAMDGPU_TARGETS`. There is no
->   shortcut.
-> - **Why we compile for `gfx1030` only** (changed from the earlier `gfx1030;gfx1031`):
->   testing showed the GGML HIP backend's own gfx1031 kernels work for inference, but
->   routing everything through the well-supported gfx1030 path via `HSA_OVERRIDE` is
->   cleaner — smaller binary, faster compile, and avoids the broken rocBLAS gfx1031
->   binaries entirely.
-> - **Why `HSA_OVERRIDE` is in the Dockerfile instead of the launch script:** it
->   can no longer be accidentally omitted. An old image without this baked in,
->   combined with a launch script that no longer passes `-e HSA_OVERRIDE_GFX_VERSION`,
->   will run without the override — HIP will use gfx1031 kernels directly, which may
->   work for inference but bypasses the intended gfx1030 code path.
-
-Then start the server with one of the four scripts:
+Build a different tag from a different local llama.cpp checkout:
 
 ```bash
-bash Q4_K_M.4_0q.docker-rocm.sh 2>&1 | tee llama.server.log
-bash Q4_K_M.8_0q.docker-rocm.sh 2>&1 | tee llama.server.log
-bash UD-Q4_K_XL.4_0q.docker-rocm.sh 2>&1 | tee llama.server.log
-bash UD-Q4_K_XL.8_0q.docker-rocm.sh 2>&1 | tee llama.server.log
+bash build.docker-rocm.sh --image llama-cpp-gfx1031:my-branch --src-dir /path/to/llama.cpp
 ```
 
-## Configuration notes
-
-- `-cram 2048` enables a 2GB prompt cache in RAM, speeding up repeated context
-  (e.g. system prompts).
-- Model files are cached at `~/.cache/huggingface/` on the host and mounted into the
-  container, so they persist across restarts and are only downloaded once.
-- `HSA_OVERRIDE_GFX_VERSION=10.3.0` is passed into the container at runtime. See the
-  gfx1031 section below for why this is required.
-- `--swa-full` does not apply to this model (`n_swa = 0`) and should be omitted.
-- Qwen3.5 is a thinking model. Use `max_tokens` of at least 400 to give it room to
-  reason before producing a final answer. The response arrives in `reasoning_content`
-  (thinking) and `content` (answer) fields.
-- `--jinja` is required to use the model's own chat template, which handles Qwen3.5's
-  thinking tokens correctly.
-- `--flash-attn on` reduces VRAM pressure at large context sizes and improves throughput.
-- `--defrag-thold 0.1` enables KV cache defragmentation during long sessions, recovering
-  fragmented memory as context shifts.
-- `--no-warmup` skips the initial forward pass, reducing startup time and deferring
-  compute buffer allocation until first inference.
-
-## Measured VRAM limits (RX 6700 XT 12 GB)
-
-Tested with `stress_test.py` (progressive context fill up to ~62K tokens, then 5 rounds
-of sustained load at peak size). All four configs ran at `--ctx-size 65536` during
-measurement; ctx-sizes were then reduced to keep peak VRAM under 11 GB.
-
-### Baseline VRAM (model weights + pre-allocated KV cache)
-
-| Config | Baseline |
-|--------|----------|
-| Q4_K_M + q4_0 | 6.79 GB |
-| Q4_K_M + q8_0 | 7.24 GB |
-| UD-Q4_K_XL + q4_0 | 7.06 GB |
-| UD-Q4_K_XL + q8_0 | 7.53 GB |
-
-### VRAM at ~62K prompt tokens (ctx-size 65536)
-
-| Config | Peak VRAM | Gen speed | Sustained 5× |
-|--------|-----------|-----------|--------------|
-| Q4_K_M + q4_0 | 11.12 GB | 23.8 tok/s | ✓ |
-| Q4_K_M + q8_0 | 11.57 GB | 26.2 tok/s | ✓ |
-| UD-Q4_K_XL + q4_0 | 11.43 GB | 23.6 tok/s | ✓ |
-| UD-Q4_K_XL + q8_0 | 11.84 GB | 25.0 tok/s | ✓ |
-
-All four configs passed the full ramp and sustained load. The earlier failure of
-Q4_K_M + q8_0 was due to ~3 GB of VRAM already in use by another process at the time
-of testing — not a model or configuration issue.
-
-### ctx-size limits derived from measurements (target: peak < 11 GB)
-
-| Config | Safe ctx-size | Est. peak | Headroom |
-|--------|--------------|-----------|----------|
-| Q4_K_M + q4_0 | 57,344 | ~10.85 GB | ~0.15 GB |
-| Q4_K_M + q8_0 | 49,152 | ~10.67 GB | ~0.33 GB |
-| UD-Q4_K_XL + q4_0 | 49,152 | ~10.52 GB | ~0.48 GB |
-| UD-Q4_K_XL + q8_0 | 45,056 | ~10.66 GB | ~0.34 GB |
-
-## Tuning guide
-
-Use `vram_calc.py` to estimate the effect of changes before applying them.
-Run `stress_test.py` after changes to measure the real impact. Pass `CTX_SIZE=N` to
-match the server's actual `--ctx-size` so the test steps bracket the real limit:
+Force a rebuild after changing `Dockerfile.rocm`:
 
 ```bash
-CTX_SIZE=49152 sudo python stress_test.py
+bash build.docker-rocm.sh --force
 ```
 
-### Parameters and trade-offs
+Quickly test a newer upstream llama.cpp revision in its own image:
 
-| Parameter | Increase | Decrease |
-|-----------|----------|----------|
-| `--ctx-size` | More conversation history; server refuses oversized requests gracefully | Less history; lower baseline VRAM |
-| `--ubatch-size` | Fewer GPU dispatches per batch, faster prefill | Smaller FA working memory per dispatch |
-| `--cache-type-k/v` | `q8_0` = ~2 tok/s faster decode, more VRAM; `q4_0` = half the KV cache, slightly fuzzier recall of old tokens | — |
-| `--batch-size` | Faster prompt processing (prefill) | Slower prefill; does NOT change the OOM boundary |
-| `--flash-attn` | `on` = lower VRAM for long contexts, faster; `off` = more VRAM (full attention matrix), slower | — |
-
-### q4_0 vs q8_0 KV cache
-
-**q8_0 is ~2 tok/s faster** than q4_0 at the same model, consistently across both
-weight variants. The GPU decodes 8-bit aligned data more efficiently — better memory
-bandwidth utilisation during the decode phase outweighs the smaller cache size of q4_0.
-
-The trade-off is context window: q8_0's larger KV cache costs ~8K tokens of ctx budget
-compared to q4_0 at the same VRAM limit. Choose based on what matters more for your
-workload — longer context or faster generation.
-
-### Current configs (all four scripts)
-
-```
---ubatch-size 256       # smaller FA tile dispatch; reduces peak working memory
---batch-size 1024       # faster prefill; startup VRAM unaffected vs 512
---flash-attn on         # required at these context sizes
---defrag-thold 0.1      # prevents fragmentation during long agentic sessions
---no-warmup             # defers buffer allocation to first inference
---parallel 1            # single slot; no multi-user overhead
+```bash
+bash build.llama-ref.docker-rocm.sh --ref b8586 --image-tag b8586 --force
 ```
 
-Per-script ctx-size and cache-type:
+What the build script does today:
 
-| Script | ctx-size | cache-type-k/v |
-|--------|----------|----------------|
-| Q4_K_M.4_0q | 57,344 | q4_0 |
-| Q4_K_M.8_0q | 49,152 | q8_0 |
-| UD-Q4_K_XL.4_0q | 49,152 | q4_0 |
-| UD-Q4_K_XL.8_0q | 45,056 | q8_0 |
+- auto-initializes `llama.cpp-src` if the submodule is missing
+- chooses `podman` first, then `docker`
+- defaults to the image tag `llama-cpp-gfx1031:latest`
+- can package a different local llama.cpp checkout via `--src-dir`
+- can build a side-by-side upstream test image via `build.llama-ref.docker-rocm.sh`
 
-## OpenCode configuration
+Build the Vulkan container image once:
 
-`opencode.json` defines two model entries — one per quantization — because the
-`contextLength` hint tells OpenCode how much context to use:
+```bash
+bash build.docker-vulkan.sh
+```
 
-| Entry | contextLength |
-|-------|--------------|
-| `local-llama/qwen-q4km` | 40960 |
-| `local-llama/qwen-udq4kxl` | 40960 |
+Build a different Vulkan tag from a different local llama.cpp checkout:
 
-Only one server runs at a time. Switch the `"model"` field in `opencode.json` to match
-whichever launcher you started.
+```bash
+bash build.docker-vulkan.sh --image llama-cpp-vulkan:my-branch --src-dir /path/to/llama.cpp
+```
 
-## Verify setup is running
+Quickly test a newer upstream llama.cpp revision in its own Vulkan image:
 
-**Check model is loaded:**
+```bash
+bash build.llama-ref.docker-vulkan.sh --ref b8495 --image-tag b8495 --force
+```
+
+## Start the server
+
+The main checked-in ROCm launchers right now are:
+
+```bash
+bash Qwen3.5-0.8B-UD-Q5_K_XL.230k.b8495.sh
+bash Qwen3.5-2B-UD-Q5_K_XL.200k.b8495.sh
+bash Qwen3.5-4B-UD-Q5_K_XL.82k.b8495.sh
+bash Qwen3.5-9B-UD-Q5_K_XL.thinking.general.52k.b8495.sh
+```
+
+The checked-in Vulkan launchers are the `Qwen3.5-*-FULL.vulkan.sh` scripts,
+which currently target the model's full 262,144-token context window:
+
+```bash
+bash Qwen3.5-2B-UD-Q5_K_XL.FULL.vulkan.sh
+bash Qwen3.5-4B-UD-Q5_K_XL.FULL.vulkan.sh
+```
+
+The `Qwen3.5-4B-UD-Q5_K_XL.82k.b8495.sh` launcher is the practical "long
+context on this GPU" ROCm script. It launches:
+
+- Hugging Face model: `unsloth/Qwen3.5-4B-GGUF:UD-Q5_K_XL`
+- `--ctx-size 81920`
+- `--cache-type-k q8_0`
+- `--cache-type-v q8_0`
+- `--batch-size 1024`
+- `--ubatch-size 256`
+- `--parallel 1`
+- `--flash-attn on`
+- `--jinja`
+- `--no-warmup`
+- `-cram 2048`
+
+The `Qwen3.5-9B-UD-Q5_K_XL.thinking.general.52k.b8495.sh` launcher uses:
+
+- Hugging Face model: `unsloth/Qwen3.5-9B-GGUF:UD-Q5_K_XL`
+- `--ctx-size 53248`
+- `--cache-type-k q8_0`
+- `--cache-type-v q8_0`
+- `--batch-size 1024`
+- `--ubatch-size 256`
+- `--parallel 1`
+- `--flash-attn on`
+- `--jinja`
+- `--no-warmup`
+- `-cram 2048`
+
+It also mounts these host caches into the container:
+
+- `~/.cache/huggingface`
+- `~/.cache/llama.cpp`
+
+The server is exposed on `http://127.0.0.1:8080`.
+
+The ROCm launchers honor a `ROCM_IMAGE` environment override, so you can point
+an existing script at a side-by-side test image without editing the script itself:
+
+```bash
+ROCM_IMAGE=llama-cpp-gfx1031:b8586 bash Qwen3.5-4B-UD-Q5_K_XL.82k.b8495.sh
+```
+
+The Vulkan launchers honor a `VULKAN_IMAGE` environment override the same way:
+
+```bash
+VULKAN_IMAGE=llama-cpp-vulkan:b8495 bash Qwen3.5-2B-UD-Q5_K_XL.FULL.vulkan.sh
+```
+
+## Verify the server
+
+Check health:
+
+```bash
+curl -s http://127.0.0.1:8080/health
+```
+
+Check the model list:
+
 ```bash
 curl -s http://127.0.0.1:8080/v1/models | jq .
 ```
 
-**Basic inference — note: needs enough tokens for thinking + answer:**
+Simple chat completion:
+
 ```bash
 curl -s http://127.0.0.1:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Qwen3.5-9B",
+    "model": "local",
     "messages": [
       {"role": "user", "content": "What is 17 * 23? Answer with just the number."}
     ],
@@ -217,90 +201,143 @@ curl -s http://127.0.0.1:8080/v1/chat/completions \
   }' | jq '{answer: .choices[0].message.content, tps: .timings.predicted_per_second}'
 ```
 
-Expected: answer `391`, generation ~45 tok/sec (confirms GPU is active; CPU-only
-would be ~5 tok/sec).
+## OpenCode configuration
 
-**Code generation test:**
+The checked-in [`opencode.json`](./opencode.json) points OpenCode at the local
+OpenAI-compatible endpoint:
+
+- base URL: `http://127.0.0.1:8080/v1`
+- API key: dummy placeholder
+
+One thing to be aware of: `opencode.json` still contains four older Q4-oriented
+model entries:
+
+- `local-llama/qwen-q4km-q4_0`
+- `local-llama/qwen-q4km-q8_0`
+- `local-llama/qwen-udq4kxl-q4_0`
+- `local-llama/qwen-udq4kxl-q8_0`
+
+and it currently defaults to:
+
+```json
+"model": "local-llama/qwen-udq4kxl-q8_0"
+```
+
+That means the config file and the current launcher script are not fully aligned:
+
+- the launcher script now runs a Q5 model tag with `--ctx-size 53248`
+- `opencode.json` still describes the older Q4/Q4_0/q8_0 combinations
+
+So the README reflects the repository as it exists today, not an idealized
+"everything is in sync" state.
+
+## Helper scripts
+
+### `build.llama-ref.docker-rocm.sh`
+
+This is the fastest way to compare a newer upstream llama.cpp revision against
+the pinned local submodule. It:
+
+- clones `https://github.com/ggml-org/llama.cpp.git` into a temporary directory under `/tmp`
+- optionally checks out a requested ref such as `b8586`
+- builds that checkout into its own image tag, for example `llama-cpp-gfx1031:b8586`
+- leaves your checked-in `llama.cpp-src` submodule untouched
+
+Example:
+
 ```bash
-curl -s http://127.0.0.1:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "Qwen3.5-9B",
-    "messages": [
-      {"role": "user", "content": "Write a short C# function that sums an integer array and explain it briefly."}
-    ],
-    "max_tokens": 600,
-    "stream": false
-  }' | jq '.choices[0].message.content'
+bash build.llama-ref.docker-rocm.sh --ref b8586 --image-tag b8586 --force
+ROCM_IMAGE=llama-cpp-gfx1031:b8586 bash Qwen3.5-4B-UD-Q5_K_XL.82k.b8495.sh
 ```
 
-**Prompt cache test** (second request should be faster due to cached system prompt):
+### `build.llama-ref.docker-vulkan.sh`
+
+This is the Vulkan equivalent of the ROCm helper above. It:
+
+- clones `https://github.com/ggml-org/llama.cpp.git` into a temporary directory under `/tmp`
+- optionally checks out a requested ref such as `b8495`
+- builds that checkout into its own image tag, for example `llama-cpp-vulkan:b8495`
+- leaves your checked-in `llama.cpp-src` submodule untouched
+
+Example:
+
 ```bash
-for i in 1 2; do
-  time curl -s http://127.0.0.1:8080/v1/chat/completions \
-    -H "Content-Type: application/json" \
-    -d '{
-      "model": "Qwen3.5-9B",
-      "messages": [
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "Say hello."}
-      ],
-      "max_tokens": 400
-    }' > /dev/null
-done
+bash build.llama-ref.docker-vulkan.sh --ref b8495 --image-tag b8495 --force
+VULKAN_IMAGE=llama-cpp-vulkan:b8495 bash Qwen3.5-2B-UD-Q5_K_XL.FULL.vulkan.sh
 ```
 
-## gfx1031 (RX 6700 XT) — why this works and what was tried
+### `vram_calc.py`
 
-### Root cause
+Interactive VRAM calculator for llama.cpp inference. It can:
 
-gfx1031 is not officially supported by AMD ROCm. The rocBLAS library ships
-**broken gfx1031 kernel binaries** (`.hsaco` files) that fail to load at the HIP
-runtime level with:
+- read GGUF metadata from a local file or from the Hugging Face cache
+- detect hybrid models where KV-cached attention layers are fewer than total blocks
+- estimate total VRAM from model size, cache type, ctx-size, and batch-size
+- print quick what-if tables for context size and cache precision
 
+Run it with:
+
+```bash
+python vram_calc.py
 ```
-hip_code_object.cpp:400: Assertion `err == hipSuccess' failed
+
+### `stress_test.py`
+
+`stress_test.py` is now a thin entrypoint over the internal `stress_harness/`
+package. The harness:
+
+- auto-detects the running server's actual context size from `/slots` or `/props`
+- resolves the active container from the API port and tracks VRAM either
+  per-process through container PIDs or system-wide as fallback
+- uses a request watchdog driven by `/slots`, container liveness, and container logs
+- runs five phases: ramp, sustained load, cold-start, defrag stress, and boundary checks
+- warns when observed VRAM crosses the 11 GB safety target
+
+Run it against the running server with:
+
+```bash
+python stress_test.py
 ```
 
-This causes `CUBLAS_STATUS_INTERNAL_ERROR` from every hipBLAS GEMM call, making
-all GPU inference fail regardless of model or settings.
+Force a specific context size instead of auto-detecting it from the server:
 
-gfx1030 (RX 6800/6900 XT) is officially supported and has working, tuned rocBLAS
-kernels. gfx1030 and gfx1031 are ISA-identical (same RDNA2 architecture); the only
-difference is CU count and memory bus width.
+```bash
+CTX_SIZE=32768 python stress_test.py
+```
 
-### The fix
+Useful overrides while investigating slow backends:
 
-1. **Compile llama.cpp with `-DAMDGPU_TARGETS="gfx1030"`** — gfx1030 kernels are
-   ISA-identical to gfx1031 and work correctly.
+```bash
+REQUEST_TIMEOUT=3600 STALL_TIMEOUT=300 COLD_ROUNDS=3 python stress_test.py
+```
 
-2. **Set `HSA_OVERRIDE_GFX_VERSION=10.3.0`** so the HIP runtime presents the GPU as
-   gfx1030, making it use the working gfx1030 rocBLAS kernels. This is set as `ENV`
-   in the Dockerfile so it is always active regardless of how the container is run.
+## Why the Docker image targets `gfx1030`
 
-### What was discovered along the way
+The RX 6700 XT reports as `gfx1031`, but this setup intentionally compiles
+`llama.cpp` for `gfx1030` and sets:
 
-**The GGML HIP backend with gfx1031 kernels actually works for inference** — tested
-by running the old dual-target binary without `HSA_OVERRIDE_GFX_VERSION` set. The
-GGML backend uses its own compiled kernels and does not route through the broken
-rocBLAS gfx1031 binaries. The rocBLAS issue only affects hipBLAS GEMM calls, which
-the GGML HIP backend avoids.
+```bash
+HSA_OVERRIDE_GFX_VERSION=10.3.0
+```
 
-As a result, compiling for gfx1030 only (with the override) is the cleanest approach:
-smaller binary, faster compile, uses well-tested gfx1030 code paths throughout.
+That is baked into `Dockerfile.rocm`, not passed at runtime. The reason is the same
+as before: rocBLAS support for `gfx1031` is unreliable here, while the `gfx1030`
+path works cleanly for this card in practice.
 
-**Earlier approaches that did not work (before settling on the current fix):**
+Today the Dockerfile builds `llama-server` with:
 
-- `GGML_CUDA_FORCE_MMQ=1` — only redirects quantized-weight GEMMs; F16-weight
-  tensors still route to hipBLAS and crash.
-- `GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F=1` — switches compute type but rocBLAS still
-  fails to load the gfx1031 kernel binaries regardless.
-- Symlinking `TensileLibrary_lazy_gfx1031.dat` → `TensileLibrary_lazy_gfx1030.dat`
-  inside the container — HIP won't load gfx1030 code objects on a gfx1031 device
-  without `HSA_OVERRIDE_GFX_VERSION`.
+```bash
+-DGGML_HIP=ON
+-DAMDGPU_TARGETS="gfx1030"
+-DLLAMA_CURL=ON
+-DLLAMA_BUILD_BORINGSSL=ON
+```
 
-### Inside Docker
+## More tuning notes
 
-The base `rocm/dev-ubuntu-24.04` image contains only the standard rocBLAS with
-working gfx1030 kernels and no broken gfx1031 files. `HSA_OVERRIDE_GFX_VERSION=10.3.0`
-is set as `ENV` in the Dockerfile — no need to pass it at `docker run` time.
+For longer explanations of the llama.cpp flags used here, see:
+
+- [`docs/tuning-guide.md`](./docs/tuning-guide.md)
+
+That guide is still Qwen/RX 6700 XT oriented, but it is a better place than this
+README for VRAM formulas, cache trade-offs, and prompt-processing tuning.

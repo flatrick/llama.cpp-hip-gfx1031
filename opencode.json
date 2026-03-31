@@ -8,30 +8,38 @@
         "apiKey": "dummy"
       },
       "models": {
-        "qwen-q4km-q4_0": {
-          "name": "Qwen3.5-9B Q4_K_M (q4_0 KV, ctx 57344)",
+        "qwen3.5-0.8b-ud-q5_k_xl": {
+          "name": "Qwen3.5-0.8B UD-Q5_K_XL (q8_0 KV, ctx 230686)",
           "maxTokens": 16384,
-          "contextLength": 40960
+          "contextLength": 230686,
+          "tool_call": true,
+          "reasoning": true
         },
-        "qwen-q4km-q8_0": {
-          "name": "Qwen3.5-9B Q4_K_M (q8_0 KV, ctx 49152)",
+        "qwen3.5-2b-ud-q5_k_xl": {
+          "name": "Qwen3.5-2B UD-Q5_K_XL (q8_0 KV, ctx 209715)",
           "maxTokens": 16384,
-          "contextLength": 32768
+          "contextLength": 209715,
+          "tool_call": true,
+          "reasoning": true
         },
-        "qwen-udq4kxl-q4_0": {
-          "name": "Qwen3.5-9B UD-Q4_K_XL (q4_0 KV, ctx 49152)",
+        "qwen3.5-4b-ud-q5_k_xl": {
+          "name": "Qwen3.5-4B UD-Q5_K_XL (q8_0 KV, ctx 81920)",
           "maxTokens": 16384,
-          "contextLength": 32768
+          "contextLength": 81920,
+          "tool_call": true,
+          "reasoning": true
         },
-        "qwen-udq4kxl-q8_0": {
-          "name": "Qwen3.5-9B UD-Q4_K_XL (q8_0 KV, ctx 45056)",
+        "qwen3.5-9b-ud-q5_k_xl": {
+          "name": "Qwen3.5-9B UD-Q5_K_XL (q8_0 KV, ctx 53248)",
           "maxTokens": 16384,
-          "contextLength": 28672
+          "contextLength": 53248,
+          "tool_call": true,
+          "reasoning": true
         }
       }
     }
   },
-  "model": "local-llama/qwen-udq4kxl-q8_0",
+  "model": "local-llama/qwen3.5-9b-ud-q5_k_xl",
   "permission": {
     "bash": "ask",
     "edit": "allow",

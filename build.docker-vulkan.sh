@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROCM_IMAGE="llama-cpp-gfx1031:latest"
+VULKAN_IMAGE="llama-cpp-vulkan:latest"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC_DIR="$SCRIPT_DIR/llama.cpp-src"
 FORCE=0
 
 usage() {
   cat <<'EOF'
-Usage: build.docker-rocm.sh [--force] [--image IMAGE] [--src-dir PATH]
+Usage: build.docker-vulkan.sh [--force] [--image IMAGE] [--src-dir PATH]
 
-Build the ROCm llama.cpp image from a local source checkout.
+Build the Vulkan llama.cpp image from a local source checkout.
 
 Options:
   --force, -f     Rebuild even if the image already exists
-  --image IMAGE   Target image tag (default: llama-cpp-gfx1031:latest)
+  --image IMAGE   Target image tag (default: llama-cpp-vulkan:latest)
   --src-dir PATH  Source checkout to package (default: ./llama.cpp-src)
   --help, -h      Show this help
 EOF
@@ -28,7 +28,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --image)
       [[ $# -ge 2 ]] || { echo "ERROR: --image requires a value" >&2; exit 1; }
-      ROCM_IMAGE="$2"
+      VULKAN_IMAGE="$2"
       shift 2
       ;;
     --src-dir)
@@ -66,8 +66,8 @@ if [ -z "$RUNTIME" ]; then
   exit 1
 fi
 
-if [ "$FORCE" -eq 0 ] && "$RUNTIME" image inspect "$ROCM_IMAGE" > /dev/null 2>&1; then
-  echo "Image $ROCM_IMAGE already exists. Use --force to rebuild."
+if [ "$FORCE" -eq 0 ] && "$RUNTIME" image inspect "$VULKAN_IMAGE" > /dev/null 2>&1; then
+  echo "Image $VULKAN_IMAGE already exists. Use --force to rebuild."
   exit 0
 fi
 
@@ -78,7 +78,7 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$BUILD_CONTEXT/llama.cpp-src"
-cp "$SCRIPT_DIR/Dockerfile.rocm" "$BUILD_CONTEXT/Dockerfile.rocm"
+cp "$SCRIPT_DIR/Dockerfile.vulkan" "$BUILD_CONTEXT/Dockerfile.vulkan"
 
 # Package the selected working tree without copying .git metadata or prior builds.
 tar \
@@ -87,8 +87,8 @@ tar \
   -C "$SRC_DIR" \
   -cf - . | tar -C "$BUILD_CONTEXT/llama.cpp-src" -xf -
 
-echo "Building $ROCM_IMAGE from Dockerfile.rocm using source in $SRC_DIR (this takes ~15-20 min)..."
+echo "Building $VULKAN_IMAGE from Dockerfile.vulkan using source in $SRC_DIR..."
 BUILD_FLAGS=()
 [ "$FORCE" -eq 1 ] && BUILD_FLAGS+=(--no-cache)
-"$RUNTIME" build "${BUILD_FLAGS[@]}" -f "$BUILD_CONTEXT/Dockerfile.rocm" -t "$ROCM_IMAGE" "$BUILD_CONTEXT"
-echo "Done. Image $ROCM_IMAGE is ready."
+"$RUNTIME" build "${BUILD_FLAGS[@]}" -f "$BUILD_CONTEXT/Dockerfile.vulkan" -t "$VULKAN_IMAGE" "$BUILD_CONTEXT"
+echo "Done. Image $VULKAN_IMAGE is ready."
