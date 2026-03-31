@@ -32,10 +32,10 @@ fi
 
 exec "$LLAMA_SERVER_BIN" \
   -hf "$MODEL_REF" \
-  --ctx-size 53248 \
+  --ctx-size 63500 \
   --n-gpu-layers -1 \
-  --batch-size 4096 \
-  --ubatch-size 512 \
+  --batch-size 1024 \
+  --ubatch-size 256 \
   --parallel 1 \
   --flash-attn on \
   --no-mmproj \

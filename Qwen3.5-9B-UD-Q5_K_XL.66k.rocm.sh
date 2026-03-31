@@ -20,7 +20,7 @@ fi
   -p 8080:8080 \
   "$ROCM_IMAGE" \
     -hf "unsloth/Qwen3.5-9B-GGUF:UD-Q5_K_XL" \
-    --ctx-size 53248 \
+    --ctx-size 66000 \
     --n-gpu-layers -1 \
     --batch-size 1024 \
     --ubatch-size 256 \
