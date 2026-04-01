@@ -4,12 +4,16 @@
 
 ## Memory Usage
 
-When llama-server reports its memory breakdown, a large portion of VRAM shows
+When llama-server reports its memory breakdown, a large portion of VRAM can show
 up as "unaccounted" — not tracked by llama.cpp but consumed by the ROCm/HIP
-runtime. On the RX 6700 XT this overhead ranges from ~8–9 GB and varies between
-models in ways that don't scale linearly with model size.
+runtime. On the RX 6700 XT, the main cause we have now confirmed is KV-cache
+dequantization: if `--cache-type-k` or `--cache-type-v` is anything other than
+`f16`, ROCm keeps dequantized copies of both K and V and those buffers live in
+the HIP caching pool. In the tested `q8_0` runs this adds roughly 8–9 GB of
+runtime-managed memory depending on model and context size.
 
-The tools below help trace where that memory actually goes.
+The tools below help trace where that memory goes and confirm whether you are
+seeing the same behavior on a different model or setup.
 
 ### Quick: GEM buffer objects (host-side, no container changes)
 

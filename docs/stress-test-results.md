@@ -208,11 +208,13 @@ Generation: ~26.5 tok/s. See tuning guide for full breakdown.
 Three-way comparison at the same 66,048-token context size. ROCm runs inside a
 Docker container; Vulkan runs locally (native). All use per-process VRAM tracking.
 
-**Root cause finding:** ROCm with q8_0 KV cache dequantizes q8_0→float32 for
-attention computation, and the resulting float32 tensors accumulate in the GGML
-HIP caching pool (high-water mark never released). This causes VRAM to grow by
-~4× the raw KV cache size as context fills. Switching to f16 eliminates
-dequantization entirely — VRAM is flat and generation is faster.
+**Root cause finding:** The large ROCm "unaccounted" number is now explained on
+this hardware: if either `--cache-type-k` or `--cache-type-v` is not `f16`, ROCm
+keeps dequantized copies of both K and V for attention computation, and those
+buffers accumulate in the GGML HIP caching pool (high-water mark never released).
+This causes VRAM to grow by ~4× the raw KV cache size as context fills in the
+`q8_0` case tested here. Switching to `f16` for both caches removes the duplicate
+K/V copies — VRAM is flat and generation is faster.
 
 ### Configuration
 
@@ -288,12 +290,12 @@ stayed alive in all cases.
 
 All three pass all phases. Key findings:
 
-- **ROCm f16 vs ROCm q8_0:** f16 is strictly better on this hardware. VRAM drops
+- **ROCm f16 vs ROCm q8_0:** `f16` is strictly better on this hardware. VRAM drops
   from a growing 11.50 GB to a flat 8.13 GB (+39% savings), generation jumps from
   24.5 to 34.0 tok/s (+39% faster), prefill is marginally faster (115s vs 118s),
-  and the configuration becomes desktop-safe. The conventional wisdom that "q8_0
-  uses less VRAM than f16" is reversed on ROCm: the HIP pool accumulates float32
-  dequantization buffers that dwarf the saved KV cache storage.
+  and the configuration becomes desktop-safe. The conventional wisdom that "`q8_0`
+  uses less VRAM than `f16`" is reversed here because ROCm keeps dequantized K/V
+  copies whenever K or V is not `f16`, and those buffers dwarf the saved KV storage.
 - **Generation speed:** Vulkan q8_0 is fastest (38–48 tok/s), ROCm f16 is close
   (34–42 tok/s), ROCm q8_0 is slowest (24.5–40 tok/s). Vulkan's lead comes from
   not needing any dequantization at the compute stage, not from architectural
@@ -305,10 +307,10 @@ All three pass all phases. Key findings:
 - **Desktop safety:** Vulkan and ROCm f16 are both safe for desktop use at 66k;
   ROCm q8_0 is headless-only.
 
-**Recommendation for ROCm users:** Use `--cache-type-k f16 --cache-type-v f16`.
-This is the better choice in every dimension — VRAM, generation speed, desktop
-safety — and the only cost is a larger KV cache allocation on paper, which is
-more than offset by eliminating the dequantization pool growth.
+**Recommendation for ROCm users on this hardware:** Use `--cache-type-k f16
+--cache-type-v f16`. This is the better choice in every dimension — VRAM,
+generation speed, desktop safety — and changing either cache away from `f16`
+does not provide a real VRAM benefit because ROCm keeps the dequantized copies.
 
 Vulkan remains the preferred backend for the 9B model on the RX 6700 XT for
 interactive use — its flat VRAM profile also means it can reach near-full native
