@@ -1,4 +1,4 @@
-# Docker - ROCm - Qwen3.5-9B-UD-Q5_K_XL - 67000 ctx
+# Docker - ROCm - Qwen3.5-9B-UD-Q5_K_XL - 66000 ctx
 llama_memory_breakdown_print: | memory breakdown [MiB] | total   free    self   model   context   compute    unaccounted |
 llama_memory_breakdown_print: |   - ROCm0 (RX 6700 XT) | 12272 =  100 + (7147 =  5753 +    1146 +     246) +        5024 |
 llama_memory_breakdown_print: |   - Host               |                  739 =   666 +       0 +      72                |
@@ -34,7 +34,7 @@ VRAM at baseline : 7.14 GB
      65536       306,503  34169t/79.9s        23.9  11.75 GB !  11.75 GB !  OK
 
 
-# Local - Vulkan - Qwen3.5-9B-UD-Q5_K_XL - 67000 ctx 
+# Local - Vulkan - Qwen3.5-9B-UD-Q5_K_XL - 66000 ctx 
 llama_memory_breakdown_print: | memory breakdown [MiB]                 | total   free    self   model   context   compute    unaccounted |
 llama_memory_breakdown_print: |   - Vulkan0 (RX 6700 XT (RADV NAVI22)) | 12272 = 4645 + (7151 =  5753 +    1146 +     250) +         474 |
 llama_memory_breakdown_print: |   - Host                               |                  739 =   666 +       0 +      72                |
