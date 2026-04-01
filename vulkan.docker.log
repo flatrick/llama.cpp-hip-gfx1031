@@ -1,0 +1,129 @@
+srv    operator(): operator(): cleaning up before exit...
+llama_memory_breakdown_print: | memory breakdown [MiB]                 | total   free    self   model   context   compute    unaccounted |
+llama_memory_breakdown_print: |   - Vulkan0 (RX 6700 XT (RADV NAVI22)) | 12272 = 3298 + (8230 =  5753 +    2226 +     250) +         742 |
+llama_memory_breakdown_print: |   - Host                               |                  802 =   666 +       0 +     136                |
+
+======================================================================
+  llama-server stress test
+======================================================================
+  API        : http://127.0.0.1:8080/v1/chat/completions
+  CTX_SIZE   : 131,072  (auto-detected; override with CTX_SIZE=N)
+  Steps      : [4000, 8000, 16000, 24000, 32000, 32768, 65536, 91750, 104857, 115343, 120586, 124262]
+  Max gen    : 256 tokens/request
+  VRAM warn  : 11.0 GB  (! marker)
+  Hard timeout : 1800s/request
+  Stall timeout: 180s without server progress
+  Sustained  : 20 rounds
+  Cold-start : 8 rounds
+  Defrag     : 10 fill→evict cycles
+
+  Container logs: tapping 8dccda53199b via docker
+  VRAM tracking: per-process (PIDs: 122505)
+
+VRAM at baseline : 8.04 GB
+
+   ~tokens    prompt len       prefill   gen tok/s   peak VRAM   post VRAM  status
+  ────────  ────────────  ────────────  ──────────  ──────────  ──────────  ──────
+      4000        17,819   3820t/13.1s        46.4     8.04 GB     8.04 GB  OK
+      8000        35,639   4070t/13.7s        45.7     8.04 GB     8.04 GB  OK
+     16000        73,061   8261t/23.6s        43.5     8.04 GB     8.04 GB  OK
+     24000       110,483   8261t/25.7s        41.5     8.04 GB     8.04 GB  OK
+     32000       147,905   8261t/28.6s        39.7     8.04 GB     8.04 GB  OK
+     32768       153,251   1403t/10.6s        39.4     8.04 GB     8.04 GB  OK
+     65536       306,503  33026t/116.3s       33.4     8.04 GB     8.04 GB  OK
+     91750       427,679  26168t/117.7s       29.7     8.04 GB     8.04 GB  OK
+    104857       490,049  13595t/74.3s        28.2     8.04 GB     8.04 GB  OK
+    115343       538,163  10547t/63.9s        27.1     8.04 GB     8.04 GB  OK
+    120586       563,111   5594t/40.1s        26.5     8.04 GB     8.04 GB  OK
+    124262       580,931   4070t/32.6s        26.1     8.04 GB     8.04 GB  OK
+
+Ramp passed. Last tested: ~124,262 tokens.
+
+======================================================================
+  Phase 2: Sustained — 20 rounds at ~124,262 tokens
+======================================================================
+   round       prefill   gen tok/s   peak VRAM   post VRAM  status
+  ──────  ────────────  ──────────  ──────────  ──────────  ──────
+       1      4t/10.1s        26.2     8.04 GB     8.04 GB  OK
+       2      4t/10.1s        26.1     8.04 GB     8.04 GB  OK
+       3      4t/10.1s        26.1     8.04 GB     8.04 GB  OK
+       4      4t/10.1s        26.1     8.04 GB     8.04 GB  OK
+       5      4t/10.1s        26.2     8.04 GB     8.04 GB  OK
+       6      4t/10.1s        26.1     8.04 GB     8.04 GB  OK
+       7      4t/10.1s        26.1     8.04 GB     8.04 GB  OK
+       8      4t/10.1s        26.1     8.04 GB     8.04 GB  OK
+       9      4t/10.1s        26.2     8.04 GB     8.04 GB  OK
+      10      4t/10.1s        26.2     8.04 GB     8.04 GB  OK
+      11      4t/10.1s        26.2     8.04 GB     8.04 GB  OK
+      12      4t/10.1s        26.2     8.04 GB     8.04 GB  OK
+      13      4t/10.1s        26.1     8.04 GB     8.04 GB  OK
+      14      4t/10.1s        26.2     8.04 GB     8.04 GB  OK
+      15      4t/10.1s        26.2     8.04 GB     8.04 GB  OK
+      16      4t/10.1s        26.2     8.04 GB     8.04 GB  OK
+      17      4t/10.1s        26.2     8.04 GB     8.04 GB  OK
+      18      4t/10.1s        26.1     8.04 GB     8.04 GB  OK
+      19      4t/10.1s        26.2     8.04 GB     8.04 GB  OK
+      20      4t/10.1s        26.2     8.04 GB     8.04 GB  OK
+
+Sustained load passed.
+
+======================================================================
+  Phase 3: Cold-start — 8 rounds, fresh KV each time
+======================================================================
+   round       prefill   gen tok/s   peak VRAM   post VRAM  status
+  ──────  ────────────  ──────────  ──────────  ──────────  ──────
+  (leak threshold: 0.1 GB growth across rounds)
+       1  124223t/466.7s        26.2     8.04 GB     8.04 GB  OK
+       2  124223t/466.7s        26.1     8.04 GB     8.04 GB  OK
+       3  124223t/466.7s        26.1     8.04 GB     8.04 GB  OK
+       4  124223t/466.6s        26.1     8.04 GB     8.04 GB  OK
+       5  124223t/466.6s        26.1     8.04 GB     8.04 GB  OK
+       6  124223t/466.6s        26.1     8.04 GB     8.04 GB  OK
+       7  124223t/466.7s        26.1     8.04 GB     8.04 GB  OK
+       8  124223t/467.2s        26.1     8.04 GB     8.04 GB  OK
+
+Cold-start passed — no KV cache leak detected.
+
+======================================================================
+  Phase 4: Defrag stress — 10 fill→evict cycles
+======================================================================
+   cycle    step       prefill   gen tok/s   peak VRAM   post VRAM  status
+  ──────  ──────  ────────────  ──────────  ──────────  ──────────  ──────
+       1    fill  124224t/467.0s      26.1     8.04 GB     8.04 GB  OK
+       1   evict      39t/2.3s        48.7     8.04 GB     8.04 GB  OK
+       2    fill  124224t/466.3s      26.1     8.04 GB     8.04 GB  OK
+       2   evict      39t/3.5s        48.3     8.04 GB     8.04 GB  OK
+       3    fill  124224t/466.2s      26.1     8.04 GB     8.04 GB  OK
+       3   evict      39t/5.3s        48.2     8.04 GB     8.04 GB  OK
+       4    fill  124224t/466.6s      26.0     8.04 GB     8.04 GB  OK
+       4   evict      39t/2.0s        48.9     8.04 GB     8.04 GB  OK
+       5    fill  124224t/466.3s      26.1     8.04 GB     8.04 GB  OK
+       5   evict      39t/4.3s        48.4     8.04 GB     8.04 GB  OK
+       6    fill  124224t/466.1s      26.1     8.04 GB     8.04 GB  OK
+       6   evict      39t/2.1s        48.8     8.04 GB     8.04 GB  OK
+       7    fill  124224t/466.2s      26.2     8.04 GB     8.04 GB  OK
+       7   evict      39t/2.1s        48.9     8.04 GB     8.04 GB  OK
+       8    fill  124224t/466.0s      26.1     8.04 GB     8.04 GB  OK
+       8   evict      39t/2.1s        48.8     8.04 GB     8.04 GB  OK
+       9    fill  124224t/466.0s      26.1     8.04 GB     8.04 GB  OK
+       9   evict      39t/2.1s        48.8     8.04 GB     8.04 GB  OK
+      10    fill  124225t/466.0s      26.2     8.04 GB     8.04 GB  OK
+      10   evict      40t/3.5s        48.3     8.04 GB     8.04 GB  OK
+
+Defrag stress passed — no peak VRAM drift across fill→evict cycles.
+
+======================================================================
+  Phase 5: Boundary — request at ctx_size+1 must get clean HTTP 400
+======================================================================
+  HTTP 400 received : OK
+  Error message     : OK
+  VRAM unchanged    : OK (peak in-flight: 8.04 GB)
+  Server still alive: OK
+
+======================================================================
+  ALL PHASES PASSED
+  VRAM tracking : per-process (PIDs: 122505)
+  Final VRAM    : 8.04 GB
+  Server is healthy and memory-safe at configured ctx-size.
+======================================================================
+python run.py --model qwen3.5-9b --backend vulkan-docker
