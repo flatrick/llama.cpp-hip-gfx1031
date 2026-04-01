@@ -1,0 +1,41 @@
+{
+  "name": "Qwen3.5-9B UD-Q5_K_XL",
+  "hf": "unsloth/Qwen3.5-9B-GGUF:UD-Q5_K_XL",
+  "defaults": {
+    "batch_size": 1024,
+    "ubatch_size": 256,
+    "n_gpu_layers": -1,
+    "parallel": 1,
+    "flash_attn": true,
+    "no_warmup": true,
+    "no_mmproj": true,
+    "jinja": true,
+    "cram": 2048,
+    "top_k": 20,
+    "top_p": 0.8,
+    "temp": 0.7,
+    "presence_penalty": 1.5
+  },
+  "backends": {
+    "rocm-docker": {
+      "ctx_size": 131072,
+      "cache_k": "f16",
+      "cache_v": "f16"
+    },
+    "vulkan-docker": {
+      "ctx_size": 262144,
+      "cache_k": "q8_0",
+      "cache_v": "q8_0"
+    },
+    "vulkan": {
+      "ctx_size": 262144,
+      "cache_k": "q8_0",
+      "cache_v": "q8_0"
+    },
+    "rocm": {
+      "ctx_size": 131072,
+      "cache_k": "f16",
+      "cache_v": "f16"
+    }
+  }
+}

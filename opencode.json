@@ -30,9 +30,9 @@
           "reasoning": true
         },
         "qwen3.5-9b-ud-q5_k_xl": {
-          "name": "Qwen3.5-9B UD-Q5_K_XL (q8_0 KV, ctx 53248)",
+          "name": "Qwen3.5-9B UD-Q5_K_XL (q8_0 KV, ctx 262,144, Vulkan)",
           "maxTokens": 16384,
-          "contextLength": 53248,
+          "contextLength": 262144,
           "tool_call": true,
           "reasoning": true
         }
@@ -50,6 +50,6 @@
     "list": "allow",
     "patch": "allow",
     "skill": "allow",
-    "webfetch": "deny"
+    "webfetch": "allow"
   }
 }

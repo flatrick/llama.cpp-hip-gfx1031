@@ -4,10 +4,9 @@ This repository contains containerized `llama-server` setups for running local
 models on an AMD RX 6700 XT with ROCm or Vulkan, plus helper scripts for VRAM
 planning and stress testing.
 
-The old README described four Q4 launchers that are no longer in this repo. The
-current checked-in setup is centered on a pinned `llama.cpp` submodule, ROCm
-and Vulkan Docker build flows, a few launcher scripts, a checked-in
-`opencode.json`, and a couple of helper utilities.
+The setup is centered on a pinned `llama.cpp` submodule, ROCm and Vulkan Docker
+build flows, a unified Python launcher (`run.py`) with per-model config files,
+and a multi-phase stress harness.
 
 ## Current repository contents
 
@@ -21,13 +20,11 @@ Top-level files that matter for actually using this repo:
 | `build.docker-vulkan.sh` | Initializes the submodule if needed and builds a named Vulkan image from a selected local llama.cpp checkout |
 | `build.llama-ref.docker-rocm.sh` | Clones an upstream llama.cpp ref into `/tmp` and builds it as a separate ROCm test image without touching the pinned submodule |
 | `build.llama-ref.docker-vulkan.sh` | Clones an upstream llama.cpp ref into `/tmp` and builds it as a separate Vulkan test image without touching the pinned submodule |
-| `Qwen3.5-0.8B-UD-Q5_K_XL.230k.b8495.sh` | Starts the 0.8B Qwen ROCm model with a 230k context window (verified stable, 11.28 GB VRAM) |
-| `Qwen3.5-2B-UD-Q5_K_XL.200k.b8495.sh` | Starts the 2B Qwen ROCm model with a 200k context window (verified stable, 11.06 GB VRAM) |
-| `Qwen3.5-4B-UD-Q5_K_XL.82k.b8495.sh` | Starts the 4B Qwen ROCm model with an 82k context window tuned for this GPU |
-| `Qwen3.5-9B-UD-Q5_K_XL.thinking.general.52k.b8495.sh` | Starts the 9B Qwen ROCm model with a 52k context window |
-| `Qwen3.5-*-FULL.vulkan.sh` | Starts Vulkan launchers at the model's full 262,144-token context window |
+| `run.py` | Unified launcher — select model, backend, and optional overrides; runs `llama-server` via Docker or native binary |
+| `models/` | Per-model JSON configs with backend-specific defaults for context size and KV cache type |
 | `opencode.json` | OpenCode config pointing at `http://127.0.0.1:8080/v1` |
 | `vram_calc.py` | Interactive VRAM estimator that can read GGUF metadata from the local Hugging Face cache |
+| `vram_inspect.py` | Reads `/proc/{pid}/fdinfo` drm fields to show per-process GPU memory; supports watch and delta modes |
 | `stress_test.py` | Thin CLI entrypoint for the multi-phase llama-server stress harness |
 | `stress_harness/` | Reusable Python package with config, server/watchdog, runtime, VRAM, phase, and reporting logic |
 | `tests/stress_harness/` | Lightweight `unittest` coverage for the refactored stress harness |
@@ -107,71 +104,90 @@ bash build.llama-ref.docker-vulkan.sh --ref b8495 --image-tag b8495 --force
 
 ## Start the server
 
-The main checked-in ROCm launchers right now are:
+All models are launched through the unified `run.py` script. Select a model
+and a backend — settings are loaded from `models/<name>.json` and can be
+overridden on the command line.
+
+### List available models
 
 ```bash
-bash Qwen3.5-0.8B-UD-Q5_K_XL.230k.b8495.sh
-bash Qwen3.5-2B-UD-Q5_K_XL.200k.b8495.sh
-bash Qwen3.5-4B-UD-Q5_K_XL.82k.b8495.sh
-bash Qwen3.5-9B-UD-Q5_K_XL.thinking.general.52k.b8495.sh
+python run.py --list-models
 ```
 
-The checked-in Vulkan launchers are the `Qwen3.5-*-FULL.vulkan.sh` scripts,
-which currently target the model's full 262,144-token context window:
+### Common invocations
 
 ```bash
-bash Qwen3.5-2B-UD-Q5_K_XL.FULL.vulkan.sh
-bash Qwen3.5-4B-UD-Q5_K_XL.FULL.vulkan.sh
+# 9B model — ROCm Docker (f16 KV cache, 128k context, ~10.3 GB)
+python run.py --model qwen3.5-9b --backend rocm-docker
+
+# 9B model — Vulkan Docker (q8_0 KV cache, full 262k context, ~10.3 GB flat)
+python run.py --model qwen3.5-9b --backend vulkan-docker
+
+# 9B model — native Vulkan binary (same settings as vulkan-docker)
+python run.py --model qwen3.5-9b --backend vulkan
+
+# 4B model — Vulkan Docker at full native context
+python run.py --model qwen3.5-4b --backend vulkan-docker
+
+# 2B / 0.8B — ROCm Docker
+python run.py --model qwen3.5-2b --backend rocm-docker
+python run.py --model qwen3.5-0.8b --backend rocm-docker
 ```
 
-The `Qwen3.5-4B-UD-Q5_K_XL.82k.b8495.sh` launcher is the practical "long
-context on this GPU" ROCm script. It launches:
+### Overriding settings at launch time
 
-- Hugging Face model: `unsloth/Qwen3.5-4B-GGUF:UD-Q5_K_XL`
-- `--ctx-size 81920`
-- `--cache-type-k q8_0`
-- `--cache-type-v q8_0`
-- `--batch-size 1024`
-- `--ubatch-size 256`
-- `--parallel 1`
-- `--flash-attn on`
-- `--jinja`
-- `--no-warmup`
-- `-cram 2048`
-
-The `Qwen3.5-9B-UD-Q5_K_XL.thinking.general.52k.b8495.sh` launcher uses:
-
-- Hugging Face model: `unsloth/Qwen3.5-9B-GGUF:UD-Q5_K_XL`
-- `--ctx-size 53248`
-- `--cache-type-k q8_0`
-- `--cache-type-v q8_0`
-- `--batch-size 1024`
-- `--ubatch-size 256`
-- `--parallel 1`
-- `--flash-attn on`
-- `--jinja`
-- `--no-warmup`
-- `-cram 2048`
-
-It also mounts these host caches into the container:
-
-- `~/.cache/huggingface`
-- `~/.cache/llama.cpp`
-
-The server is exposed on `http://127.0.0.1:8080`.
-
-The ROCm launchers honor a `ROCM_IMAGE` environment override, so you can point
-an existing script at a side-by-side test image without editing the script itself:
+Any setting from the model config can be overridden on the command line:
 
 ```bash
-ROCM_IMAGE=llama-cpp-gfx1031:b8586 bash Qwen3.5-4B-UD-Q5_K_XL.82k.b8495.sh
+# Push 9B ROCm context toward the 11 GB ceiling (headless only)
+python run.py --model qwen3.5-9b --backend rocm-docker --ctx-size 147456
+
+# Run 9B Vulkan with f16 KV cache instead of the default q8_0
+python run.py --model qwen3.5-9b --backend vulkan --cache-k f16 --cache-v f16
+
+# Use a side-by-side test image
+python run.py --model qwen3.5-9b --backend rocm-docker --image llama-cpp-gfx1031:b8586
+
+# Different port
+python run.py --model qwen3.5-9b --backend vulkan-docker --port 8081
 ```
 
-The Vulkan launchers honor a `VULKAN_IMAGE` environment override the same way:
+The `--image` flag is equivalent to the old `ROCM_IMAGE` / `VULKAN_IMAGE`
+environment variables, which are also still honoured if you prefer:
 
 ```bash
-VULKAN_IMAGE=llama-cpp-vulkan:b8495 bash Qwen3.5-2B-UD-Q5_K_XL.FULL.vulkan.sh
+ROCM_IMAGE=llama-cpp-gfx1031:b8586 python run.py --model qwen3.5-9b --backend rocm-docker
 ```
+
+### Preview without running
+
+```bash
+python run.py --model qwen3.5-9b --backend rocm-docker --dry-run
+```
+
+Both host HuggingFace and llama.cpp caches are mounted into the container
+automatically. The server is exposed on `http://127.0.0.1:8080`.
+
+### Model configs
+
+Per-model defaults live in `models/<name>.json`. Each file has a `defaults`
+section (shared across all backends) and a `backends` section (per-backend
+overrides for ctx_size, cache_k, cache_v, etc.). CLI flags take final
+precedence over both.
+
+The currently configured models are:
+
+| Model ID | HF reference | ROCm ctx | Vulkan ctx |
+|----------|-------------|----------|------------|
+| `qwen3.5-9b` | `unsloth/Qwen3.5-9B-GGUF:UD-Q5_K_XL` | 131,072 (f16) | 262,144 (q8_0) |
+| `qwen3.5-4b` | `unsloth/Qwen3.5-4B-GGUF:UD-Q5_K_XL` | 81,920 (f16) | 262,144 (q8_0) |
+| `qwen3.5-2b` | `unsloth/Qwen3.5-2B-GGUF:UD-Q5_K_XL` | 209,715 (f16) | 262,144 (q8_0) |
+| `qwen3.5-0.8b` | `unsloth/Qwen3.5-0.8B-GGUF:UD-Q5_K_XL` | 230,686 (f16) | 262,144 (q8_0) |
+
+ROCm uses f16 KV cache because the ROCm HIP backend dequantizes quantized KV
+types to float32 internally, causing VRAM to grow with context fill rather than
+staying flat. f16 eliminates that overhead. See `docs/tuning-guide.md` for the
+full explanation.
 
 ## Verify the server
 
@@ -209,27 +225,9 @@ OpenAI-compatible endpoint:
 - base URL: `http://127.0.0.1:8080/v1`
 - API key: dummy placeholder
 
-One thing to be aware of: `opencode.json` still contains four older Q4-oriented
-model entries:
-
-- `local-llama/qwen-q4km-q4_0`
-- `local-llama/qwen-q4km-q8_0`
-- `local-llama/qwen-udq4kxl-q4_0`
-- `local-llama/qwen-udq4kxl-q8_0`
-
-and it currently defaults to:
-
-```json
-"model": "local-llama/qwen-udq4kxl-q8_0"
-```
-
-That means the config file and the current launcher script are not fully aligned:
-
-- the launcher script now runs a Q5 model tag with `--ctx-size 53248`
-- `opencode.json` still describes the older Q4/Q4_0/q8_0 combinations
-
-So the README reflects the repository as it exists today, not an idealized
-"everything is in sync" state.
+The model ID in `opencode.json` just needs to match whatever the running
+`llama-server` advertises — it does not have to correspond to a real HuggingFace
+path. Update it to match your preferred model before starting a session.
 
 ## Helper scripts
 
@@ -247,7 +245,7 @@ Example:
 
 ```bash
 bash build.llama-ref.docker-rocm.sh --ref b8586 --image-tag b8586 --force
-ROCM_IMAGE=llama-cpp-gfx1031:b8586 bash Qwen3.5-4B-UD-Q5_K_XL.82k.b8495.sh
+python run.py --model qwen3.5-4b --backend rocm-docker --image llama-cpp-gfx1031:b8586
 ```
 
 ### `build.llama-ref.docker-vulkan.sh`
@@ -263,7 +261,7 @@ Example:
 
 ```bash
 bash build.llama-ref.docker-vulkan.sh --ref b8495 --image-tag b8495 --force
-VULKAN_IMAGE=llama-cpp-vulkan:b8495 bash Qwen3.5-2B-UD-Q5_K_XL.FULL.vulkan.sh
+python run.py --model qwen3.5-2b --backend vulkan-docker --image llama-cpp-vulkan:b8495
 ```
 
 ### `vram_inspect.py`
