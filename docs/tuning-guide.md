@@ -65,7 +65,7 @@ Total VRAM = Model Weights + KV Cache + Compute Buffer + Runtime Overhead
 | **Model weights** | At startup (fixed) | Model size & quantization | 5.3-5.8 GB |
 | **KV cache** | At startup (pre-allocated) | ctx-size x cache-type x model architecture | 0.5-4.0 GB |
 | **Compute buffer** | During inference | batch-size, ubatch-size | 0.2-1.8 GB |
-| **Runtime overhead** | At startup (fixed) | ROCm/CUDA runtime, driver | ~0.6 GB |
+| **Runtime overhead** | At startup (fixed) | Backend (ROCm vs Vulkan) | ~0.15 GB per-process |
 
 The KV cache and compute buffer are the two components you can tune. Model weights
 are fixed by your choice of model and quantization. Runtime overhead is fixed by
@@ -633,44 +633,60 @@ Where:
   Overhead      = ROCm/CUDA runtime (see below)
 ```
 
-> **WARNING — ROCm overhead is massive and unpredictable.** On the RX 6700 XT,
-> measured ROCm runtime overhead is **~4 GB** — far larger than the commonly
-> cited ~0.6 GB. This overhead is not reported by llama.cpp and can only be
-> observed by comparing the server's reported allocations against actual VRAM
-> usage (via `amdgpu_top` or sysfs). Do not trust theoretical VRAM calculations
-> without verifying against real measurements.
+> **Note on VRAM measurements:** Always use `stress_test.py` with per-process
+> VRAM tracking rather than system-wide tools. System-wide measurements include
+> the Wayland compositor and other GPU clients, which can add 3-4 GB on a desktop
+> and make the runtime look far more expensive than it actually is. The per-process
+> overhead above what llama.cpp reports is ~150 MB for both ROCm and Vulkan.
 
-### Actual Measured Breakdown (Qwen3.5-9B UD-Q5_K_XL, ctx-size 57344)
+### Actual Measured Breakdown (Qwen3.5-9B UD-Q5_K_XL, ctx-size 66048)
 
 From the server log (`llama_context` / `sched_reserve` output):
 
 ```
 Model weights (ROCm0)   :  5,753.94 MiB   (fixed)
 Model weights (CPU)     :    666.88 MiB   (CPU-mapped, not on GPU)
-KV cache (q8_0/q8_0)   :    952.00 MiB   (K: 476, V: 476)
+KV cache (q8_0/q8_0)   :  ~1,096.00 MiB  (K: 548, V: 548, 8 attn layers)
 Recurrent state (RS)    :     50.25 MiB   (hybrid model, 32 recurrent layers)
 Compute buffer (ROCm0)  :    246.50 MiB   (batch processing scratch)
 Output buffer           :      0.95 MiB
 ────────────────────────────────────────
-Reported GPU total      :  7,003.64 MiB   (~6.84 GB)
-Actual system-wide      : ~11,146   MiB   (~10.88 GB)
-ROCm overhead (gap)     :  ~4,143   MiB   (~4.05 GB)
+Reported GPU total      :  ~7,147  MiB   (~6.98 GB)
+ROCm per-process (baseline)  :  7.13 GB   (~150 MiB overhead above reported)
+Vulkan per-process (baseline):  6.99 GB   (~10 MiB overhead above reported)
 ```
 
-The ~4 GB ROCm overhead is the dominant "hidden" cost and the main reason why
-theoretical calculations underestimate actual VRAM usage.
+VRAM grows under ROCm as context fills (driver commits pages on use).
+Vulkan pre-commits all allocations at startup, so per-process VRAM stays flat.
+At 62,444 tokens filled: **ROCm 11.50 GB, Vulkan 6.99 GB**.
 
 ### Measured Configurations (RX 6700 XT, 12 GB, UD-Q5_K_XL, q8_0/q8_0)
 
-| ctx-size | Per-process VRAM | System-wide peak | Desktop headroom | Verdict |
-|----------|-----------------|-----------------|-----------------|---------|
-| 40,960 | 9.31 GB | ~9.72 GB | ~2.5 GB | Comfortable |
-| 53,248 | 10.39 GB | ~10.64 GB | ~1.6 GB | **Desktop sweet spot** |
-| 57,344 | 10.89 GB | ~11.15 GB | ~1.1 GB | Too tight for desktop |
-| 65,536 | ~11.5 GB | ~11.87 GB | ~0.4 GB | Headless only |
+Per-process measurements from `stress_test.py` (not system-wide — see note above).
 
-> These are real measurements, not estimates. Use `stress_test.py` (with
-> per-process VRAM tracking) to verify after any configuration change.
+**ROCm backend (Docker container):**
+
+| ctx-size | Baseline VRAM | Peak VRAM (full ctx) | Headroom | Verdict |
+|----------|--------------|---------------------|----------|---------|
+| 40,960 | ~6.7 GB | ~9.31 GB | ~2.7 GB | Comfortable |
+| 53,248 | ~6.9 GB | 10.39 GB | ~1.6 GB | **Desktop sweet spot** |
+| 57,344 | ~7.0 GB | ~10.89 GB | ~1.1 GB | Tight for desktop |
+| 66,048 | 7.13 GB | 11.50 GB | ~0.5 GB | Headless only |
+
+**Vulkan backend (local or Docker — identical per-process VRAM):**
+
+| ctx-size | VRAM at startup (flat) | Headroom | Verdict |
+|----------|------------------------|----------|---------|
+| 66,048 | **6.99 GB** | ~5.0 GB | Desktop-safe, ~47→38 tok/s |
+| 262,144 | **10.31 GB** | ~1.7 GB | Full native context, ~47→18 tok/s |
+
+Vulkan pre-commits all allocations at startup; VRAM does not grow as context
+fills. This makes Vulkan dramatically more VRAM-efficient at 66k context than
+ROCm on this hardware (6.99 GB vs 11.50 GB at peak).
+
+> These are real measurements. Use `stress_test.py` to verify after any
+> configuration change. The harness auto-detects local server processes and
+> uses per-process VRAM tracking whether running in Docker or natively.
 
 ---
 
@@ -691,9 +707,11 @@ profiles:
 **Generation** (token output):
 - Produces one token at a time, sequentially
 - Memory-bandwidth-bound: each token requires reading all model weights from VRAM
-- Speed measured in "tokens generated per second" (typically 20-40 tok/s for 9B)
-- Controlled by: cache-type (q8_0 is faster due to aligned reads), model size
+- Speed measured in "tokens generated per second" (ROCm: 25-40 tok/s; Vulkan: 38-48 tok/s for 9B)
+- Controlled by: cache-type (q8_0 is faster due to aligned reads), model size, backend
 - VRAM impact: stable (just KV cache growing by one token per step)
+- **Backend matters significantly:** Vulkan is 20-57% faster at generation than ROCm on RDNA2,
+  with the gap widening at larger context sizes (memory-bandwidth difference becomes dominant)
 
 This is why batch-size affects prefill speed but not generation speed, and why
 q8_0 KV cache gives faster generation despite using more VRAM.
@@ -715,9 +733,35 @@ Legend: ↑ increases, ↓ decreases, -- no effect, ↑↑/↓↓ significant ef
 
 ## Practical Tuning Strategies
 
-### Strategy 1: Desktop Use (Recommended)
+### Strategy 1: Desktop Use — Vulkan (Recommended)
 
-**Goal:** Maximum context while leaving ~1.5 GB for Wayland compositor and desktop apps.
+**Goal:** Maximum context with best generation speed, safe for desktop with GUI apps.
+
+```
+--ctx-size 66048     # or up to ~256000 for near-full native context
+--cache-type-k q8_0
+--cache-type-v q8_0
+--batch-size 1024
+--ubatch-size 256
+--flash-attn on
+-cram 2048
+```
+
+**Measured (Vulkan, 66k):** 6.99 GB per-process flat regardless of context fill,
+~5 GB headroom at 66k. Generation: **38-48 tok/s**. Cold prefill of 62k tokens: ~162s.
+
+**Full context (Vulkan, 262k):** VRAM rises to **10.31 GB** at startup (KV cache
+pre-committed for the full 262k window) and stays flat from there — 1.7 GB headroom.
+Generation: **18 tok/s at 248k tokens**, 47 tok/s at 4k tokens. Cold-start prefill
+of ~248k tokens takes ~28 min (~147 tok/s), so use `QUICK=1` for stress testing.
+All phases pass. See `docs/stress-test-results.md` for the full breakdown.
+
+**Best for:** Interactive coding with OpenCode, multi-turn agentic workflows on a
+desktop. The preferred backend for the 9B model on this hardware.
+
+### Strategy 2: Desktop Use — ROCm
+
+**Goal:** Maximum context within ROCm constraints while keeping desktop usable.
 
 ```
 --ctx-size 53248
@@ -729,18 +773,18 @@ Legend: ↑ increases, ↓ decreases, -- no effect, ↑↑/↓↓ significant ef
 -cram 2048
 ```
 
-**Measured:** 10.39 GB per-process, ~10.64 GB system-wide, ~1.6 GB headroom.
+**Measured (ROCm):** 10.39 GB per-process at full context, ~1.6 GB headroom.
 Generation: ~26.5 tok/s. Prefill at full context: ~92s for 50K tokens.
 
-**Best for:** Interactive coding with OpenCode, multi-turn agentic workflows
-on a desktop with GUI applications running.
+**Best for:** ROCm-only setups. ROCm VRAM grows as context fills, so 53k is the
+safe desktop limit. At 66k ROCm peaks at 11.50 GB — headless only.
 
-### Strategy 2: Headless / Maximum Context
+### Strategy 3: Headless / Maximum Context — ROCm
 
-**Goal:** Squeeze every last token out of the context window (no desktop overhead).
+**Goal:** Squeeze every last token out of the context window under ROCm (no desktop).
 
 ```
---ctx-size 65536
+--ctx-size 66048
 --cache-type-k q8_0
 --cache-type-v q8_0
 --batch-size 1024
@@ -749,13 +793,12 @@ on a desktop with GUI applications running.
 -cram 2048
 ```
 
-**Measured:** ~11.86 GB system-wide, only ~0.4 GB headroom.
-Generation: ~24.6 tok/s. Stable across all stress test phases.
+**Measured (ROCm):** 7.13 GB baseline → 11.50 GB per-process at full context,
+~0.5 GB headroom. Generation: ~24.5 tok/s. All stress test phases passed.
 
-**Best for:** Headless servers, SSH-only machines, Docker-only setups with no
-GUI/compositor consuming VRAM. Not safe for desktop use.
+**Best for:** Headless servers, SSH-only machines, Docker-only ROCm setups.
 
-### Strategy 3: Maximum Generation Speed
+### Strategy 4: Maximum Generation Speed
 
 **Goal:** Fastest possible token output for quick interactive chat.
 
@@ -769,11 +812,11 @@ GUI/compositor consuming VRAM. Not safe for desktop use.
 -cram 2048
 ```
 
-**Estimated:** ~9.5 GB system-wide, ~2.7 GB headroom.
-Generation: ~30 tok/s. Plenty of room for desktop apps.
+**Estimated (ROCm):** ~9.5 GB at full context, ~2.7 GB headroom. Generation: ~30 tok/s.
+**Estimated (Vulkan):** ~6.99 GB flat. Generation: ~42-44 tok/s.
 
-**Best for:** Quick Q&A, short coding questions, rapid iteration where you
-don't need long context.
+**Best for:** Quick Q&A, short coding questions, rapid iteration where long context
+is not needed. Vulkan gives noticeably faster responses here too.
 
 ---
 

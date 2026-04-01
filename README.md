@@ -287,8 +287,9 @@ python vram_calc.py
 package. The harness:
 
 - auto-detects the running server's actual context size from `/slots` or `/props`
-- resolves the active container from the API port and tracks VRAM either
-  per-process through container PIDs or system-wide as fallback
+- resolves the active container from the API port and tracks VRAM per-process
+  through container PIDs (Docker/Podman) or by port-matched local PID (native
+  llama-server), falling back to system-wide only if neither is found
 - uses a request watchdog driven by `/slots`, container liveness, and container logs
 - runs five phases: ramp, sustained load, cold-start, defrag stress, and boundary checks
 - warns when observed VRAM crosses the 11 GB safety target
@@ -304,6 +305,15 @@ Force a specific context size instead of auto-detecting it from the server:
 ```bash
 CTX_SIZE=32768 python stress_test.py
 ```
+
+Reduce round counts for large-context testing where each round takes many minutes:
+
+```bash
+QUICK=1 CTX_SIZE=250000 python stress_test.py
+```
+
+`QUICK=1` sets `SUSTAINED_ROUNDS=3`, `COLD_ROUNDS=1`, `DEFRAG_CYCLES=1`.
+Individual env vars still override: `QUICK=1 COLD_ROUNDS=2` gives cold_rounds=2.
 
 Useful overrides while investigating slow backends:
 

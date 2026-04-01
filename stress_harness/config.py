@@ -47,6 +47,7 @@ class StressConfig:
         env = dict(os.environ if environ is None else environ)
         defaults = cls()
         ctx_override = env.get("CTX_SIZE")
+        quick = env.get("QUICK", "0").strip() in ("1", "true", "yes")
         return cls(
             api_url=env.get("API_URL", defaults.api_url),
             max_tokens=_env_int(env, "MAX_TOKENS", defaults.max_tokens),
@@ -56,10 +57,10 @@ class StressConfig:
             vram_warn_gb=_env_float(env, "VRAM_WARN_GB", defaults.vram_warn_gb),
             ctx_size_override=int(ctx_override) if ctx_override is not None else defaults.ctx_size_override,
             ctx_size_fallback=int(ctx_override) if ctx_override is not None else defaults.ctx_size_fallback,
-            sustained_rounds=_env_int(env, "SUSTAINED_ROUNDS", defaults.sustained_rounds),
-            cold_rounds=_env_int(env, "COLD_ROUNDS", defaults.cold_rounds),
+            sustained_rounds=_env_int(env, "SUSTAINED_ROUNDS", 3 if quick else defaults.sustained_rounds),
+            cold_rounds=_env_int(env, "COLD_ROUNDS", 1 if quick else defaults.cold_rounds),
             leak_threshold_gb=_env_float(env, "LEAK_THRESHOLD_GB", defaults.leak_threshold_gb),
-            defrag_cycles=_env_int(env, "DEFRAG_CYCLES", defaults.defrag_cycles),
+            defrag_cycles=_env_int(env, "DEFRAG_CYCLES", 1 if quick else defaults.defrag_cycles),
         )
 
     def build_steps(self, ctx_size: int) -> list[int]:

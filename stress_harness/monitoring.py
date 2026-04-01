@@ -25,9 +25,60 @@ class VramMonitor:
                 info.vram_mode = mode
                 return cls(lambda: cls._read_drm_vram_for_pids(pids), mode)
 
+        # No container — try to find the local llama-server process by port.
+        host_port = inspector.api_host_port()
+        if host_port is not None:
+            local_pids = cls._find_pids_for_port(host_port)
+            if local_pids:
+                test = cls._read_drm_vram_for_pids(local_pids)
+                if test is not None:
+                    mode = f"per-process local (PIDs: {', '.join(local_pids)})"
+                    info.vram_mode = mode
+                    return cls(lambda: cls._read_drm_vram_for_pids(local_pids), mode)
+
         mode = "system-wide (includes all GPU clients)"
         info.vram_mode = mode
         return cls(cls._system_vram_gb, mode)
+
+    @staticmethod
+    def _find_pids_for_port(port: int) -> list[str]:
+        """Return PIDs of processes listening on *port* via /proc/net/tcp."""
+        hex_port = f"{port:04X}"
+        inodes: set[str] = set()
+
+        # /proc/net/tcp covers the host; /proc/*/net/tcp covers per-namespace views.
+        candidates = ["/proc/net/tcp"] + glob.glob("/proc/*/net/tcp")
+        for tcp_path in candidates:
+            try:
+                with open(tcp_path) as fh:
+                    for line in fh:
+                        parts = line.split()
+                        if len(parts) < 10:
+                            continue
+                        local_addr, state, inode = parts[1], parts[3], parts[9]
+                        # state 0A = TCP_LISTEN
+                        if state == "0A" and local_addr.endswith(f":{hex_port}"):
+                            inodes.add(inode)
+            except (PermissionError, FileNotFoundError, OSError):
+                continue
+
+        if not inodes:
+            return []
+
+        pids: list[str] = []
+        for fd_path in glob.glob("/proc/*/fd/*"):
+            try:
+                pid = fd_path.split("/")[2]
+                if not pid.isdigit():
+                    continue
+                target = os.readlink(fd_path)
+                if target.startswith("socket:[") and target[len("socket:["):-1] in inodes:
+                    if pid not in pids:
+                        pids.append(pid)
+            except (PermissionError, FileNotFoundError, OSError):
+                continue
+
+        return pids
 
     def read(self) -> float | None:
         return self._reader()

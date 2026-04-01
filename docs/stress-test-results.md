@@ -190,10 +190,159 @@ reach the full 262K native context you would need either:
 
 ---
 
-## Qwen3.5-9B UD-Q5_K_XL — 52K context
+## Qwen3.5-9B UD-Q5_K_XL — 52K context (ROCm)
 
 **Script:** `Qwen3.5-9B-UD-Q5_K_XL.thinking.general.52k.b8495.sh`
 **Date:** previously verified (see `docs/tuning-guide.md` for measured configurations)
 
-Measured VRAM at 53,248 ctx-size: 10.39 GB per-process, ~10.64 GB system-wide.
+Measured VRAM at 53,248 ctx-size: 10.39 GB per-process.
 Generation: ~26.5 tok/s. See tuning guide for full breakdown.
+
+---
+
+## Qwen3.5-9B UD-Q5_K_XL — 66K context, ROCm vs Vulkan
+
+**Date:** 2026-04-01
+**Result:** ALL PHASES PASSED (both backends)
+
+This run compares ROCm (Docker container) and Vulkan (local, native) at the same
+66,048-token context size using identical stress parameters. Both used per-process
+VRAM tracking — ROCm via container PIDs, Vulkan via port-matched local PID.
+
+### Configuration (both backends)
+
+```
+--ctx-size 66048
+--cache-type-k q8_0
+--cache-type-v q8_0
+--batch-size 1024
+--ubatch-size 256
+--flash-attn on
+--parallel 1
+-cram 2048
+```
+
+### Phase 1: Ramp
+
+| ~tokens | ROCm prefill | Vulkan prefill | ROCm gen tok/s | Vulkan gen tok/s | ROCm VRAM | Vulkan VRAM |
+|---------|-------------|---------------|---------------|-----------------|-----------|-------------|
+| 4,000 | 11.5s | 10.6s | 39.7 | 47.7 | 7.21 GB | 6.99 GB |
+| 8,000 | 12.3s | 11.5s | 37.8 | 46.9 | 7.43 GB | 6.99 GB |
+| 16,000 | 19.2s | 19.7s | 34.7 | 45.4 | 8.01 GB | 6.99 GB |
+| 24,000 | 19.7s | 20.9s | 32.4 | 44.0 | 8.59 GB | 6.99 GB |
+| 32,000 | 22.4s | 25.7s | 30.4 | 42.7 | 9.15 GB | 6.99 GB |
+| 46,200 | 34.9s | 44.9s | 27.3 | 40.4 | 10.40 GB | 6.99 GB |
+| 52,800 | 23.6s | 28.5s | 26.1 | 39.6 | 10.81 GB | 6.99 GB |
+| 58,080 | 22.2s | 26.4s | 25.2 | 38.9 | 11.26 GB ⚠ | 6.99 GB |
+| 60,720 | 16.9s | 17.6s | 24.8 | 38.5 | 11.50 GB ⚠ | 6.99 GB |
+| 62,444 | 14.6s | 13.6s | 24.5 | 38.3 | 11.50 GB ⚠ | 6.99 GB |
+
+### Phase 2: Sustained (20 rounds at ~62,444 tokens)
+
+| Metric | ROCm | Vulkan |
+|--------|------|--------|
+| Generation speed | 24.5 tok/s (rock solid) | 38.3–38.4 tok/s (rock solid) |
+| Round time | ~10.6s | ~6.8s |
+| VRAM | 11.50 GB ⚠ (stable) | 6.99 GB (stable) |
+
+### Phase 3: Cold-start (8 rounds, fresh KV each time)
+
+| Metric | ROCm | Vulkan |
+|--------|------|--------|
+| Full prefill time | ~118s per round | ~162s per round |
+| Prefill rate | ~527 tok/s | ~385 tok/s |
+| Generation speed | 24.5 tok/s | 38.4 tok/s |
+| VRAM leak | None | None |
+
+### Phase 4: Defrag stress (10 fill→evict cycles)
+
+| Metric | ROCm | Vulkan |
+|--------|------|--------|
+| Fill time per cycle | ~117.9s | ~161.4s |
+| Evict gen speed | ~42.1 tok/s | ~48.5–49.2 tok/s |
+| Peak VRAM drift | None | None |
+
+### Phase 5: Boundary
+
+Both backends returned clean HTTP 400 for ctx_size+1 request. Server stayed alive.
+
+### Verdict
+
+Both backends pass all phases. Key trade-offs:
+
+- **Generation speed:** Vulkan wins decisively (+20% at short context, +57% at 62k tokens)
+- **Prefill speed:** ROCm wins for large batches (+37% for a full 62k cold prefill)
+- **VRAM:** Vulkan uses 6.99 GB flat at any context fill; ROCm grows to 11.50 GB at 62k
+- **Desktop safety:** Vulkan is safe for desktop use at 66k context; ROCm is headless-only
+
+Vulkan is the preferred backend for the 9B model on the RX 6700 XT for interactive use.
+Its flat VRAM profile also means it can reach near-full native context within 12 GB — see
+the 262k result below.
+
+---
+
+## Qwen3.5-9B UD-Q5_K_XL — 262K context, Vulkan (QUICK=1)
+
+**Script:** `Qwen3.5-9B-UD-Q5_K_XL.FULL.vulkan.sh`
+**Date:** 2026-04-01
+**Result:** ALL PHASES PASSED
+**Flags:** `QUICK=1 CTX_SIZE=262144` (sustained=3, cold=1, defrag=1)
+
+### Configuration
+
+```
+--ctx-size 262144
+--cache-type-k q8_0
+--cache-type-v q8_0
+--batch-size 1024
+--ubatch-size 256
+--flash-attn on
+--parallel 1
+-cram 2048
+```
+
+### VRAM
+
+**10.31 GB flat** — Vulkan pre-commits the entire KV cache at startup. VRAM does not
+grow as context fills. ~1.7 GB headroom at all times.
+
+The ~3.32 GB increase vs 66k baseline (6.99 GB → 10.31 GB) is the additional KV cache
+for 262k - 66k = 196k tokens × 8 attention layers × q8_0.
+
+### Phase 1: Ramp
+
+| ~tokens | Prefill time | Gen tok/s | VRAM |
+|---------|-------------|-----------|------|
+| 4,000 | 13.1s | 46.9 | 10.31 GB |
+| 8,000 | 13.7s | 46.1 | 10.31 GB |
+| 16,000 | 24.0s | 43.8 | 10.31 GB |
+| 32,000 | 30.6s | 39.9 | 10.31 GB |
+| 65,536 | 138.1s | 33.6 | 10.31 GB |
+| 131,072 | 419.3s | 25.7 | 10.31 GB |
+| 183,500 | 442.8s | 21.6 | 10.31 GB |
+| 209,715 | 254.0s | 20.0 | 10.31 GB |
+| 230,686 | 222.3s | 18.9 | 10.31 GB |
+| 241,172 | 123.9s | 18.4 | 10.31 GB |
+| 248,780 | 99.2s | 18.0 | 10.31 GB |
+
+### Phases 2–4 (at ~248,780 tokens)
+
+| Phase | Result |
+|-------|--------|
+| Sustained (3 rounds) | 18.0 tok/s, 10.31 GB stable |
+| Cold-start (1 round) | 248,429t in **1,689s** (~147 tok/s), no leak |
+| Defrag fill | 248,430t in 1,690s, no VRAM drift |
+| Defrag evict gen | 49.2 tok/s (empty context, fast) |
+
+### Verdict
+
+The 9B model at full 262k native context is stable on Vulkan with 10.31 GB VRAM.
+Generation degrades from 47 tok/s (4k context) to 18 tok/s (248k context) — graceful
+and predictable.
+
+The cold-start prefill time (~28 min for 248k tokens) makes full stress-testing
+impractical; `QUICK=1` is required. The defrag evict at 49.2 tok/s confirms the
+model is compute-bound at small context even at 262k allocation.
+
+ROCm cannot reach this context size on 12 GB — it would exceed VRAM before the
+KV cache for 262k context could fit (projected ~14+ GB per-process).
