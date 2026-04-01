@@ -27,8 +27,8 @@ fi
     --parallel 1 \
     --flash-attn on \
     --no-mmproj \
-    --cache-type-k q8_0 \
-    --cache-type-v q8_0 \
+    --cache-type-k f16 \
+    --cache-type-v f16 \
     --top-k 20 \
     --top-p 0.8 \
     --temp 0.7 \

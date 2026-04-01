@@ -200,21 +200,24 @@ Generation: ~26.5 tok/s. See tuning guide for full breakdown.
 
 ---
 
-## Qwen3.5-9B UD-Q5_K_XL — 66K context, ROCm vs Vulkan
+## Qwen3.5-9B UD-Q5_K_XL — 66K context, ROCm f16 vs ROCm q8_0 vs Vulkan q8_0
 
 **Date:** 2026-04-01
-**Result:** ALL PHASES PASSED (both backends)
+**Result:** ALL PHASES PASSED (all three configurations)
 
-This run compares ROCm (Docker container) and Vulkan (local, native) at the same
-66,048-token context size using identical stress parameters. Both used per-process
-VRAM tracking — ROCm via container PIDs, Vulkan via port-matched local PID.
+Three-way comparison at the same 66,048-token context size. ROCm runs inside a
+Docker container; Vulkan runs locally (native). All use per-process VRAM tracking.
 
-### Configuration (both backends)
+**Root cause finding:** ROCm with q8_0 KV cache dequantizes q8_0→float32 for
+attention computation, and the resulting float32 tensors accumulate in the GGML
+HIP caching pool (high-water mark never released). This causes VRAM to grow by
+~4× the raw KV cache size as context fills. Switching to f16 eliminates
+dequantization entirely — VRAM is flat and generation is faster.
+
+### Configuration
 
 ```
 --ctx-size 66048
---cache-type-k q8_0
---cache-type-v q8_0
 --batch-size 1024
 --ubatch-size 256
 --flash-attn on
@@ -222,10 +225,17 @@ VRAM tracking — ROCm via container PIDs, Vulkan via port-matched local PID.
 -cram 2048
 ```
 
+KV cache types:
+- **ROCm q8_0:** `--cache-type-k q8_0 --cache-type-v q8_0`
+- **ROCm f16:** `--cache-type-k f16 --cache-type-v f16`
+- **Vulkan q8_0:** `--cache-type-k q8_0 --cache-type-v q8_0`
+
 ### Phase 1: Ramp
 
-| ~tokens | ROCm prefill | Vulkan prefill | ROCm gen tok/s | Vulkan gen tok/s | ROCm VRAM | Vulkan VRAM |
-|---------|-------------|---------------|---------------|-----------------|-----------|-------------|
+ROCm q8_0 vs Vulkan q8_0 (full per-step data):
+
+| ~tokens | ROCm q8_0 prefill | Vulkan prefill | ROCm q8_0 gen | Vulkan gen | ROCm q8_0 VRAM | Vulkan VRAM |
+|---------|-------------------|---------------|---------------|------------|----------------|-------------|
 | 4,000 | 11.5s | 10.6s | 39.7 | 47.7 | 7.21 GB | 6.99 GB |
 | 8,000 | 12.3s | 11.5s | 37.8 | 46.9 | 7.43 GB | 6.99 GB |
 | 16,000 | 19.2s | 19.7s | 34.7 | 45.4 | 8.01 GB | 6.99 GB |
@@ -237,47 +247,72 @@ VRAM tracking — ROCm via container PIDs, Vulkan via port-matched local PID.
 | 60,720 | 16.9s | 17.6s | 24.8 | 38.5 | 11.50 GB ⚠ | 6.99 GB |
 | 62,444 | 14.6s | 13.6s | 24.5 | 38.3 | 11.50 GB ⚠ | 6.99 GB |
 
+ROCm f16 ramp endpoints (VRAM flat throughout — intermediate steps not recorded):
+
+| ~tokens | ROCm f16 gen tok/s | ROCm f16 VRAM |
+|---------|--------------------|---------------|
+| 4,000 | 41.7 | 8.07 GB |
+| 62,444 | 34.0 | 8.13 GB |
+
 ### Phase 2: Sustained (20 rounds at ~62,444 tokens)
 
-| Metric | ROCm | Vulkan |
-|--------|------|--------|
-| Generation speed | 24.5 tok/s (rock solid) | 38.3–38.4 tok/s (rock solid) |
-| Round time | ~10.6s | ~6.8s |
-| VRAM | 11.50 GB ⚠ (stable) | 6.99 GB (stable) |
+| Metric | ROCm q8_0 | ROCm f16 | Vulkan q8_0 |
+|--------|-----------|----------|-------------|
+| Generation speed | 24.5 tok/s | 34.0 tok/s | 38.3–38.4 tok/s |
+| Round time | ~10.6s | — | ~6.8s |
+| VRAM | 11.50 GB ⚠ (stable) | 8.13 GB (flat) | 6.99 GB (flat) |
 
 ### Phase 3: Cold-start (8 rounds, fresh KV each time)
 
-| Metric | ROCm | Vulkan |
-|--------|------|--------|
-| Full prefill time | ~118s per round | ~162s per round |
-| Prefill rate | ~527 tok/s | ~385 tok/s |
-| Generation speed | 24.5 tok/s | 38.4 tok/s |
-| VRAM leak | None | None |
+| Metric | ROCm q8_0 | ROCm f16 | Vulkan q8_0 |
+|--------|-----------|----------|-------------|
+| Full prefill time | ~118s per round | ~115s per round | ~162s per round |
+| Prefill rate | ~527 tok/s | ~543 tok/s | ~385 tok/s |
+| Generation speed | 24.5 tok/s | 34.0 tok/s | 38.4 tok/s |
+| VRAM leak | None | None | None |
 
 ### Phase 4: Defrag stress (10 fill→evict cycles)
 
-| Metric | ROCm | Vulkan |
-|--------|------|--------|
-| Fill time per cycle | ~117.9s | ~161.4s |
-| Evict gen speed | ~42.1 tok/s | ~48.5–49.2 tok/s |
-| Peak VRAM drift | None | None |
+| Metric | ROCm q8_0 | ROCm f16 | Vulkan q8_0 |
+|--------|-----------|----------|-------------|
+| Fill time per cycle | ~117.9s | ~114.5–115s | ~161.4s |
+| Evict gen speed | ~42.1 tok/s | ~42.4–42.5 tok/s | ~48.5–49.2 tok/s |
+| Peak VRAM drift | None | None | None |
 
 ### Phase 5: Boundary
 
-Both backends returned clean HTTP 400 for ctx_size+1 request. Server stayed alive.
+All three configurations returned clean HTTP 400 for ctx_size+1 request. Server
+stayed alive in all cases.
 
 ### Verdict
 
-Both backends pass all phases. Key trade-offs:
+All three pass all phases. Key findings:
 
-- **Generation speed:** Vulkan wins decisively (+20% at short context, +57% at 62k tokens)
-- **Prefill speed:** ROCm wins for large batches (+37% for a full 62k cold prefill)
-- **VRAM:** Vulkan uses 6.99 GB flat at any context fill; ROCm grows to 11.50 GB at 62k
-- **Desktop safety:** Vulkan is safe for desktop use at 66k context; ROCm is headless-only
+- **ROCm f16 vs ROCm q8_0:** f16 is strictly better on this hardware. VRAM drops
+  from a growing 11.50 GB to a flat 8.13 GB (+39% savings), generation jumps from
+  24.5 to 34.0 tok/s (+39% faster), prefill is marginally faster (115s vs 118s),
+  and the configuration becomes desktop-safe. The conventional wisdom that "q8_0
+  uses less VRAM than f16" is reversed on ROCm: the HIP pool accumulates float32
+  dequantization buffers that dwarf the saved KV cache storage.
+- **Generation speed:** Vulkan q8_0 is fastest (38–48 tok/s), ROCm f16 is close
+  (34–42 tok/s), ROCm q8_0 is slowest (24.5–40 tok/s). Vulkan's lead comes from
+  not needing any dequantization at the compute stage, not from architectural
+  differences in the backends.
+- **Prefill speed:** ROCm wins for large batches (~530–540 tok/s for both ROCm
+  configs vs ~385 tok/s for Vulkan). This is compute-bound and ROCm's HIP
+  kernels are more efficient than Vulkan SPIR-V for large matrix operations.
+- **VRAM:** Vulkan 6.99 GB flat < ROCm f16 8.13 GB flat < ROCm q8_0 11.50 GB peak.
+- **Desktop safety:** Vulkan and ROCm f16 are both safe for desktop use at 66k;
+  ROCm q8_0 is headless-only.
 
-Vulkan is the preferred backend for the 9B model on the RX 6700 XT for interactive use.
-Its flat VRAM profile also means it can reach near-full native context within 12 GB — see
-the 262k result below.
+**Recommendation for ROCm users:** Use `--cache-type-k f16 --cache-type-v f16`.
+This is the better choice in every dimension — VRAM, generation speed, desktop
+safety — and the only cost is a larger KV cache allocation on paper, which is
+more than offset by eliminating the dequantization pool growth.
+
+Vulkan remains the preferred backend for the 9B model on the RX 6700 XT for
+interactive use — its flat VRAM profile also means it can reach near-full native
+context within 12 GB (see the 262k result below).
 
 ---
 

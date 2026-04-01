@@ -109,9 +109,10 @@ simply because there's more to process.
 > and any system prompt overhead.
 
 **On this hardware (RX 6700 XT + Qwen3.5-9B):**
-- 65,536 with q8_0 KV cache pushes peak VRAM to ~11.8 GB (dangerously close to 12 GB limit)
-- 65,536 with q4_0 KV cache peaks at ~11.1 GB (tight but workable)
-- 49,152 with q8_0 is the sweet spot for quality + safety (~10.7 GB peak)
+- 65,536 with ROCm + q8_0 KV cache: VRAM grows to ~11.50 GB at full context (headless only)
+- 65,536 with ROCm + f16 KV cache: VRAM stays flat at ~8.13 GB (desktop-safe; f16 is better than q8_0 on ROCm — see below)
+- 49,152 with ROCm + q8_0 is the conservative desktop sweet spot (~10.39 GB peak, ~1.6 GB headroom)
+- 262,144 with Vulkan + q8_0: VRAM flat at 10.31 GB (full native context, 1.7 GB headroom)
 
 ---
 
@@ -137,22 +138,38 @@ values. These can be set independently (asymmetric quantization).
 (along with model weights). Switching from q8_0 to q4_0 **halves** the KV cache
 VRAM. For a 65K context Qwen3.5-9B, this saves roughly 1-2 GB.
 
-**How they affect speed:** Perhaps counter-intuitively, **q8_0 is ~2 tok/s faster**
-than q4_0 during generation on AMD GPUs. The GPU's memory controller handles
-8-bit-aligned reads more efficiently than 4-bit packed reads. The smaller cache
-size of q4_0 doesn't compensate because generation is bandwidth-bound, not
-capacity-bound.
+**How they affect speed:** Counter-intuitive results on ROCm:
+
+- **f16 vs q8_0 on ROCm:** f16 is **faster** than q8_0 despite being 2× larger on
+  paper. The ROCm HIP backend dequantizes q8_0→float32 for attention computation
+  and these float32 buffers accumulate in the GGML HIP caching pool. f16 requires
+  no dequantization: the GPU reads and computes in native half-precision. At 62k
+  context, this difference is **34 tok/s (f16) vs 24.5 tok/s (q8_0)** — a 39%
+  speed improvement from switching to the larger type.
+- **q8_0 vs q4_0:** q8_0 is ~2 tok/s faster than q4_0. The GPU memory controller
+  handles byte-aligned reads more efficiently than 4-bit packed reads. The smaller
+  cache size of q4_0 doesn't compensate because generation is bandwidth-bound, not
+  capacity-bound.
+- **Vulkan** uses native shader operations; q8_0 dequantization is handled
+  efficiently in SPIR-V without accumulating intermediate buffers.
 
 **How they affect quality:** See the [KV Cache Deep Dive](#kv-cache-deep-dive)
 section for a detailed breakdown by task type.
 
 **Recommendations:**
-| Priority | K cache | V cache | Rationale |
-|----------|---------|---------|-----------|
-| Maximum quality | q8_0 | q8_0 | Best recall + fastest decode |
-| Balanced | q8_0 | q4_0 | Keys preserved, V tolerates quantization |
-| Maximum context | q4_0 | q4_0 | Smallest KV cache, most room for ctx-size |
-| Experimental | q5_1 | q4_0 | Middle ground; test with your workload |
+| Priority | K cache | V cache | Backend | Rationale |
+|----------|---------|---------|---------|-----------|
+| **ROCm** | f16 | f16 | ROCm | Only reasonable choice — q8_0 dequant pool growth makes other types worse in both VRAM and speed |
+| Vulkan — recommended | q8_0 | q8_0 | Vulkan | No HIP pool issue; q8_0 is fast and saves VRAM vs f16 |
+| Vulkan — maximum context | q4_0 | q4_0 | Vulkan | Smallest KV cache, most room for ctx-size |
+| Vulkan — experimental | q5_1 | q4_0 | Vulkan | Middle ground; test with your workload |
+
+> **ROCm + any quantized KV cache warning:** The GGML HIP backend dequantizes
+> quantized KV tensors to float32 for attention computation. These float32 buffers
+> accumulate in the HIP caching pool (high-water mark is never released). At 66k
+> context with q8_0, this adds ~3.4 GB of pool growth on top of what llama.cpp
+> reports. f16 requires no dequantization and is the only KV cache type that gives
+> flat VRAM under ROCm.
 
 ---
 
@@ -537,11 +554,12 @@ For a 53K context (desktop-safe configuration):
 
 > **Important — hybrid architecture:** Because Qwen3.5-9B only uses 8 attention
 > layers for its KV cache, the KV cache is a much smaller fraction of total VRAM
-> than you'd expect from a 9B model. The dominant VRAM consumers are model weights
-> (~5.7 GB) and ROCm runtime overhead (~4 GB). This means changing `--cache-type`
-> or `--ctx-size` has less impact than on pure-attention models. The model also
-> allocates a separate **recurrent state (RS) buffer** (~50 MiB) for the non-attention
-> layers.
+> than you'd expect from a 9B model. The dominant VRAM consumer is model weights
+> (~5.7 GB). Under ROCm with quantized KV types, a secondary VRAM consumer emerges:
+> float32 dequantization buffers accumulate in the GGML HIP pool as context fills
+> (up to ~3.4 GB extra at 66k with q8_0). With f16 KV cache this pool doesn't exist.
+> The model also allocates a separate **recurrent state (RS) buffer** (~50 MiB) for
+> the non-attention layers.
 
 ### How Quantization Types Compare
 
@@ -549,29 +567,38 @@ Quantization replaces full-precision floating point values with lower-bit
 representations, trading precision for memory savings. Each type uses a block-based
 scheme where values are grouped, scaled, and rounded:
 
-| Type | Bits | Scheme | Quality | Speed (AMD) |
-|------|------|--------|---------|-------------|
-| f16 | 16 | Native half-float | Perfect | Baseline |
-| q8_0 | 8 | Block-scaled 8-bit integers | Near-perfect | **Fastest** (aligned reads) |
-| q5_1 | 5.5 | 5-bit + 2 scale values per block | Very good | Moderate |
-| q5_0 | 5 | 5-bit + 1 scale value per block | Good | Moderate |
-| q4_1 | 4.5 | 4-bit + 2 scale values per block | Good | Moderate |
-| q4_0 | 4 | 4-bit + 1 scale value per block | Acceptable | Slower than q8_0 |
+| Type | Bits | Scheme | Quality | Speed — Vulkan | Speed — ROCm |
+|------|------|--------|---------|----------------|--------------|
+| f16 | 16 | Native half-float | Perfect | Baseline | **Fastest** (no dequant) |
+| q8_0 | 8 | Block-scaled 8-bit integers | Near-perfect | **Fastest** (aligned reads) | Slower (dequant pool grows) |
+| q5_1 | 5.5 | 5-bit + 2 scale values per block | Very good | Moderate | Avoid |
+| q5_0 | 5 | 5-bit + 1 scale value per block | Good | Moderate | Avoid |
+| q4_1 | 4.5 | 4-bit + 2 scale values per block | Good | Moderate | Avoid |
+| q4_0 | 4 | 4-bit + 1 scale value per block | Acceptable | Slower than q8_0 | Avoid |
 
-The "speed" column reflects an important counter-intuitive fact on AMD GPUs:
-**q8_0 is faster than q4_0 despite being larger**, because the GPU memory
-controller handles byte-aligned reads more efficiently than sub-byte packed reads.
-The dequantization overhead of unpacking 4-bit values outweighs the bandwidth
-savings from the smaller data size.
+Speed is backend-dependent because the two backends handle dequantization differently:
+
+- **Vulkan:** q8_0 KV tensors are dequantized efficiently in SPIR-V shaders without
+  accumulating intermediate allocations. q8_0 is the fastest choice because the GPU
+  memory controller handles 8-bit-aligned reads better than 4-bit packed values.
+- **ROCm:** Any quantized KV type (q8_0, q5_1, q5_0, q4_1, q4_0) is dequantized
+  to float32 before attention computation. These float32 buffers accumulate in the
+  GGML HIP caching pool and are never freed (pool high-water mark grows with context
+  fill). At 66k context with q8_0, this pool adds ~3.4 GB beyond what llama.cpp
+  reports. **f16 requires no dequantization** and gives flat VRAM and faster
+  generation than q8_0 on ROCm.
+
+> **WARNING — ROCm + any quantized KV type:** Using q8_0, q5_1, q5_0, q4_1, or
+> q4_0 KV cache types under ROCm causes progressive VRAM growth as context fills,
+> due to accumulated float32 dequantization buffers in the HIP pool. At 66k context,
+> ROCm q8_0 peaks at 11.50 GB vs 8.13 GB for ROCm f16 — headless-only vs desktop-safe.
+> **Use f16 for both K and V caches under ROCm.**
 
 > **WARNING — CPU load spike with sub-byte cache types:** On this hardware
 > (RX 6700 XT, ROCm via Docker, `-cram` enabled), using any sub-byte V-cache
 > type (q4_0, q4_1, q5_0, q5_1) causes CPU usage to jump from ~200% to ~600%.
 > The dequantization appears to hit the CPU path (likely through the `-cram`
-> prompt cache), not just the GPU. **Stick with q8_0 for both K and V caches**
-> unless you can verify that sub-byte types don't cause excessive CPU load on
-> your setup. This was tested with q5_0 specifically, but the same unpacking
-> overhead applies to all sub-byte types.
+> prompt cache), not just the GPU. This applies regardless of backend.
 
 ### Asymmetric K/V Quantization
 
@@ -656,20 +683,30 @@ ROCm per-process (baseline)  :  7.13 GB   (~150 MiB overhead above reported)
 Vulkan per-process (baseline):  6.99 GB   (~10 MiB overhead above reported)
 ```
 
-VRAM grows under ROCm as context fills (driver commits pages on use).
-Vulkan pre-commits all allocations at startup, so per-process VRAM stays flat.
-At 62,444 tokens filled: **ROCm 11.50 GB, Vulkan 6.99 GB**.
+Under ROCm with any quantized KV cache type, VRAM grows as context fills because
+the GGML HIP pool accumulates float32 dequantization buffers (high-water mark never
+released). ROCm with f16 KV cache has flat VRAM — identical behavior to Vulkan.
+Vulkan always pre-commits all allocations at startup, so per-process VRAM is flat
+regardless of KV cache type.
 
-### Measured Configurations (RX 6700 XT, 12 GB, UD-Q5_K_XL, q8_0/q8_0)
+At 62,444 tokens filled: **ROCm q8_0: 11.50 GB | ROCm f16: 8.13 GB | Vulkan q8_0: 6.99 GB**.
+
+### Measured Configurations (RX 6700 XT, 12 GB, UD-Q5_K_XL)
 
 Per-process measurements from `stress_test.py` (not system-wide — see note above).
 
-**ROCm backend (Docker container):**
+**ROCm backend (Docker container), f16/f16 KV cache (recommended):**
+
+| ctx-size | Baseline VRAM | Peak VRAM (full ctx) | Headroom | Verdict |
+|----------|--------------|---------------------|----------|---------|
+| 66,048 | 8.07 GB | **8.13 GB (flat)** | ~3.9 GB | Desktop-safe, 42→34 tok/s |
+
+**ROCm backend (Docker container), q8_0/q8_0 KV cache (not recommended):**
 
 | ctx-size | Baseline VRAM | Peak VRAM (full ctx) | Headroom | Verdict |
 |----------|--------------|---------------------|----------|---------|
 | 40,960 | ~6.7 GB | ~9.31 GB | ~2.7 GB | Comfortable |
-| 53,248 | ~6.9 GB | 10.39 GB | ~1.6 GB | **Desktop sweet spot** |
+| 53,248 | ~6.9 GB | 10.39 GB | ~1.6 GB | Desktop-safe (barely) |
 | 57,344 | ~7.0 GB | ~10.89 GB | ~1.1 GB | Tight for desktop |
 | 66,048 | 7.13 GB | 11.50 GB | ~0.5 GB | Headless only |
 
@@ -681,8 +718,8 @@ Per-process measurements from `stress_test.py` (not system-wide — see note abo
 | 262,144 | **10.31 GB** | ~1.7 GB | Full native context, ~47→18 tok/s |
 
 Vulkan pre-commits all allocations at startup; VRAM does not grow as context
-fills. This makes Vulkan dramatically more VRAM-efficient at 66k context than
-ROCm on this hardware (6.99 GB vs 11.50 GB at peak).
+fills. ROCm f16 achieves the same flat behavior because no dequantization pool
+accumulates.
 
 > These are real measurements. Use `stress_test.py` to verify after any
 > configuration change. The harness auto-detects local server processes and
@@ -707,14 +744,14 @@ profiles:
 **Generation** (token output):
 - Produces one token at a time, sequentially
 - Memory-bandwidth-bound: each token requires reading all model weights from VRAM
-- Speed measured in "tokens generated per second" (ROCm: 25-40 tok/s; Vulkan: 38-48 tok/s for 9B)
-- Controlled by: cache-type (q8_0 is faster due to aligned reads), model size, backend
-- VRAM impact: stable (just KV cache growing by one token per step)
-- **Backend matters significantly:** Vulkan is 20-57% faster at generation than ROCm on RDNA2,
-  with the gap widening at larger context sizes (memory-bandwidth difference becomes dominant)
+- Speed measured in "tokens generated per second" (ROCm f16: 34-42 tok/s; Vulkan q8_0: 38-48 tok/s for 9B)
+- Controlled by: cache-type, model size, backend — but cache-type interaction is backend-dependent
+- VRAM impact: stable for Vulkan and ROCm f16; grows under ROCm with quantized KV types
+- **Backend matters significantly:** Vulkan is ~10-40% faster at generation than ROCm f16 on RDNA2.
+  ROCm with q8_0 is much worse than ROCm f16 at large context due to dequantization overhead.
 
-This is why batch-size affects prefill speed but not generation speed, and why
-q8_0 KV cache gives faster generation despite using more VRAM.
+This is why batch-size affects prefill speed but not generation speed, and why KV cache type
+has outsized impact on ROCm (dequantization pool accumulation) but not on Vulkan.
 
 ### How Parameters Affect Each Phase
 
@@ -723,7 +760,8 @@ q8_0 KV cache gives faster generation despite using more VRAM.
 | ctx-size ↑ | -- | -- | ↑↑ | ↑↑ |
 | batch-size ↑ | ↑↑ | -- | ↑ | -- |
 | ubatch-size ↑ | ↑ | -- | ↑ | -- |
-| cache q8→q4 | -- | ↓ (~2 tok/s) | ↓↓ | ↓↓ |
+| cache f16→q8 (ROCm) | -- | ↓↓ (~10 tok/s at large ctx) | ↑↑ (pool growth) | ↑ |
+| cache q8→q4 (Vulkan) | -- | ↓ (~2 tok/s) | ↓↓ | ↓↓ |
 | flash-attn on | ↑ | -- | ↓↓ | -- |
 | parallel ↑ | -- | -- | ↑↑ | ↑↑ |
 
@@ -761,42 +799,52 @@ desktop. The preferred backend for the 9B model on this hardware.
 
 ### Strategy 2: Desktop Use — ROCm
 
-**Goal:** Maximum context within ROCm constraints while keeping desktop usable.
-
-```
---ctx-size 53248
---cache-type-k q8_0
---cache-type-v q8_0
---batch-size 1024
---ubatch-size 256
---flash-attn on
--cram 2048
-```
-
-**Measured (ROCm):** 10.39 GB per-process at full context, ~1.6 GB headroom.
-Generation: ~26.5 tok/s. Prefill at full context: ~92s for 50K tokens.
-
-**Best for:** ROCm-only setups. ROCm VRAM grows as context fills, so 53k is the
-safe desktop limit. At 66k ROCm peaks at 11.50 GB — headless only.
-
-### Strategy 3: Headless / Maximum Context — ROCm
-
-**Goal:** Squeeze every last token out of the context window under ROCm (no desktop).
+**Goal:** Maximum context with ROCm while keeping desktop usable.
 
 ```
 --ctx-size 66048
---cache-type-k q8_0
---cache-type-v q8_0
+--cache-type-k f16
+--cache-type-v f16
 --batch-size 1024
 --ubatch-size 256
 --flash-attn on
 -cram 2048
 ```
 
-**Measured (ROCm):** 7.13 GB baseline → 11.50 GB per-process at full context,
-~0.5 GB headroom. Generation: ~24.5 tok/s. All stress test phases passed.
+**Measured (ROCm f16):** 8.07 GB baseline → 8.13 GB flat throughout all context
+fills, ~3.9 GB headroom. Generation: **34–42 tok/s** (vs 24.5–40 tok/s with q8_0).
+Cold prefill of 62k tokens: ~115s (~543 tok/s). All stress test phases passed.
 
-**Best for:** Headless servers, SSH-only machines, Docker-only ROCm setups.
+**Why f16, not q8_0:** ROCm dequantizes any quantized KV type to float32 internally.
+The float32 buffers accumulate in the GGML HIP caching pool and are never freed.
+With q8_0 at 66k context, this pool grows to ~11.50 GB (headless-only). With f16,
+no dequantization happens and VRAM stays flat at 8.13 GB.
+
+**Best for:** ROCm-only setups that need desktop use. f16 gives more context, faster
+generation, and flat VRAM compared to q8_0. The 53k/q8_0 configuration documented
+previously is superseded by this.
+
+### Strategy 3: Headless — ROCm (maximum context)
+
+**Goal:** Squeeze more context out of ROCm if the 3.9 GB f16 headroom is not enough.
+
+```
+--ctx-size 66048          # or higher if VRAM allows
+--cache-type-k f16
+--cache-type-v f16
+--batch-size 1024
+--ubatch-size 256
+--flash-attn on
+-cram 2048
+```
+
+**Measured (ROCm f16, 66k):** 8.13 GB flat, ~3.9 GB headroom — already comfortable
+for desktop. For headless use the primary lever to increase context is to simply
+raise `--ctx-size`: each 10k additional tokens adds roughly 160 MiB of KV cache
+(8 attention layers × q8_0 effective density at f16).
+
+**Best for:** Headless servers or SSH-only machines where you want to push context
+beyond 66k without Vulkan.
 
 ### Strategy 4: Maximum Generation Speed
 

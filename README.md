@@ -266,6 +266,33 @@ bash build.llama-ref.docker-vulkan.sh --ref b8495 --image-tag b8495 --force
 VULKAN_IMAGE=llama-cpp-vulkan:b8495 bash Qwen3.5-2B-UD-Q5_K_XL.FULL.vulkan.sh
 ```
 
+### `vram_inspect.py`
+
+Reads `/proc/{pid}/fdinfo` for a running llama-server and prints all GPU memory
+fields (`drm-memory-vram`, `drm-memory-gtt`, `drm-memory-cpu`, `drm-shared-*`)
+in a clean table. Deduplicates by `drm-client-id` so shared BOs are not
+double-counted.
+
+```bash
+# one snapshot (auto-detects llama-server by port 8080)
+python vram_inspect.py
+
+# refresh every 2 seconds — watch VRAM live while sending requests
+python vram_inspect.py --watch
+
+# take a baseline, press Enter after running a request, see exact delta
+python vram_inspect.py --delta
+
+# target a specific pid or port
+python vram_inspect.py --pid 12345
+python vram_inspect.py --port 8081
+```
+
+The `--delta` mode is the most useful for investigating why ROCm VRAM grows with
+context: take a baseline snapshot, send a large-context request, press Enter,
+and the delta table shows exactly which memory categories (VRAM, GTT, CPU,
+shared) changed and by how much.
+
 ### `vram_calc.py`
 
 Interactive VRAM calculator for llama.cpp inference. It can:
