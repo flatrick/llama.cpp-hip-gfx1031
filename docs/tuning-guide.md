@@ -774,38 +774,34 @@ Legend: ↑ increases, ↓ decreases, -- no effect, ↑↑/↓↓ significant ef
 
 ## Practical Tuning Strategies
 
-### Strategy 1: Desktop Use — Vulkan (Recommended)
+### Backend selection
 
-**Goal:** Maximum context with best generation speed, safe for desktop with GUI apps.
+The choice between ROCm and Vulkan is driven by whether the desired context size
+fits within ROCm's VRAM budget:
 
-```
---ctx-size 66048     # or up to ~256000 for near-full native context
---cache-type-k q8_0
---cache-type-v q8_0
---batch-size 1024
---ubatch-size 256
---flash-attn on
--cram 2048
-```
+- **Use ROCm when it fits.** ROCm's prompt processing (prefill) speed is ~65%
+  faster than Vulkan at the same context size (~440 tok/s vs ~266 tok/s measured
+  at 131k tokens). Generation speed is comparable or slightly faster on ROCm at
+  large context. If the VRAM budget allows, ROCm is the better choice.
+- **Use Vulkan when ROCm won't fit.** Vulkan's q8_0 KV cache uses ~2 GB less
+  VRAM than ROCm f16 at the same context size, and its flat pre-committed profile
+  allows much larger contexts (up to ~262k on 12 GB vs ~131k for ROCm). The
+  trade-off is slower prefill.
 
-**Measured (Vulkan, 66k):** 6.99 GB per-process flat regardless of context fill,
-~5 GB headroom at 66k. Generation: **38-48 tok/s**. Cold prefill of 62k tokens: ~162s.
+Do not use f16 KV cache with Vulkan. Vulkan has native q8_0 compute kernels that
+operate directly on quantized data — f16 approximately halves prefill speed and
+increases VRAM with no benefit. The f16 requirement is ROCm-specific.
 
-**Full context (Vulkan, 262k):** VRAM rises to **10.31 GB** at startup (KV cache
-pre-committed for the full 262k window) and stays flat from there — 1.7 GB headroom.
-Generation: **18 tok/s at 248k tokens**, 47 tok/s at 4k tokens. Cold-start prefill
-of ~248k tokens takes ~28 min (~147 tok/s), so use `QUICK=1` for stress testing.
-All phases pass. See `docs/stress-test-results.md` for the full breakdown.
+See `docs/stress-test-results.md` for the full measured comparison.
 
-**Best for:** Interactive coding with OpenCode, multi-turn agentic workflows on a
-desktop. The preferred backend for the 9B model on this hardware.
+---
 
-### Strategy 2: Desktop Use — ROCm
+### Strategy 1: Desktop Use — ROCm (preferred when context fits)
 
-**Goal:** Maximum context with ROCm while keeping desktop usable.
+**Goal:** Best prompt processing speed with flat VRAM, safe for desktop use.
 
 ```
---ctx-size 66048
+--ctx-size 131072    # up to ~131k fits comfortably; push higher headless
 --cache-type-k f16
 --cache-type-v f16
 --batch-size 1024
@@ -814,20 +810,53 @@ desktop. The preferred backend for the 9B model on this hardware.
 -cram 2048
 ```
 
-**Measured (ROCm f16):** 8.07 GB baseline → 8.13 GB flat throughout all context
-fills, ~3.9 GB headroom. Generation: **34–42 tok/s** (vs 24.5–40 tok/s with q8_0).
-Cold prefill of 62k tokens: ~115s (~543 tok/s). All stress test phases passed.
+**Measured (ROCm f16, 131k):** 10.06 GB baseline, 10.12 GB flat at full context fill,
+~2 GB headroom. Generation: **28–42 tok/s**. Cold prefill of 124k tokens: ~282s
+(**~440 tok/s**). All stress test phases passed.
+
+**Measured (ROCm f16, 66k):** 8.07 GB baseline → 8.13 GB flat, ~3.9 GB headroom.
+Generation: **34–42 tok/s**. Cold prefill of 62k tokens: ~115s (~543 tok/s).
 
 **Why `f16`/`f16`, not anything else:** On this hardware, if either cache type is
 not `f16`, ROCm keeps dequantized copies of both K and V internally. Those buffers
 accumulate in the GGML HIP caching pool and are never freed. With `q8_0` at 66k
 context, this pushes usage to ~11.50 GB (headless-only). With `f16`/`f16`,
-no duplicate K/V buffers are needed and VRAM stays flat at 8.13 GB.
+no duplicate K/V buffers are needed and VRAM stays flat.
 
-**Best for:** ROCm-only setups that need desktop use. `f16`/`f16` gives more
-context, faster generation, and flat VRAM. On this machine there is no real VRAM
-win from using other K/V types under ROCm, because the backend gives it back as
-dequantized copies.
+**Best for:** Any context size that fits within the VRAM budget. ROCm's prefill
+speed advantage is significant for agentic workflows that frequently load large
+contexts. Always use `f16`/`f16` — there is no real VRAM saving from other KV
+types under ROCm on this hardware.
+
+### Strategy 2: Desktop Use — Vulkan (when context exceeds ROCm budget)
+
+**Goal:** Larger context than ROCm can fit, at the cost of slower prefill.
+
+```
+--ctx-size 262144    # full native context; use smaller values to save VRAM
+--cache-type-k q8_0
+--cache-type-v q8_0
+--batch-size 1024
+--ubatch-size 256
+--flash-attn on
+-cram 2048
+```
+
+**Measured (Vulkan, 131k):** 8.04 GB flat. Generation: **26–46 tok/s**. Cold prefill
+of 124k tokens: ~467s (**~266 tok/s** — ~65% slower than ROCm at the same context).
+
+**Full context (Vulkan, 262k):** VRAM rises to **10.31 GB** at startup (KV cache
+pre-committed for the full 262k window) and stays flat — 1.7 GB headroom.
+Generation: **18 tok/s at 248k tokens**, 47 tok/s at 4k tokens. Cold-start prefill
+of ~248k tokens takes ~28 min (~147 tok/s), so use `QUICK=1` for stress testing.
+All phases pass. See `docs/stress-test-results.md` for the full breakdown.
+
+**Why q8_0, not f16:** Vulkan has native q8_0 compute kernels. Using f16 instead
+approximately halves prefill speed with no VRAM benefit. Always use q8_0 on Vulkan.
+
+**Best for:** Contexts that don't fit under ROCm (beyond ~131k on 12 GB), or when
+VRAM headroom for desktop compositing is the priority. Prefill speed is the main
+cost compared to ROCm.
 
 ### Strategy 3: Headless — ROCm (maximum context)
 
