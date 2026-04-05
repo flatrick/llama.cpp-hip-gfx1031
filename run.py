@@ -276,10 +276,18 @@ def main() -> None:
         list_models()
         return
 
+    missing: list[tuple[str, str]] = []
     if not args.model:
-        parser.error("--model is required (or use --list-models to see options)")
+        missing.append(("--model  ", "Model name or path to a .json config  (see --list-models)"))
     if not args.backend:
-        parser.error("--backend is required: rocm, vulkan-docker, or local")
+        missing.append(("--backend", "Backend to use: rocm-docker | vulkan-docker | vulkan | rocm"))
+    if missing:
+        print("Missing required arguments:", file=sys.stderr)
+        for flag, desc in missing:
+            print(f"  {flag}  {desc}", file=sys.stderr)
+        model_ex = args.model if args.model else "<model-name>"
+        print(f"\nExample:\n  python run.py --model {model_ex} --backend rocm-docker", file=sys.stderr)
+        sys.exit(1)
 
     cfg = load_model_config(args.model)
 
