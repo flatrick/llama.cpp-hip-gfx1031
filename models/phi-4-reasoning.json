@@ -1,8 +1,8 @@
 {
-  "name": "Qwen3.5-4B UD-Q5_K_XL",
-  "hf": "unsloth/Qwen3.5-4B-GGUF:UD-Q5_K_XL",
+  "name": "phi 4 Reasoning UD-Q4_K_XL",
+  "hf": "unsloth/Phi-4-reasoning-GGUF:UD-Q4_K_XL",
   "defaults": {
-    "ctx_size": 262144,
+    "ctx_size": 16384,
     "batch_size": 1024,
     "ubatch_size": 256,
     "n_gpu_layers": -1,
@@ -12,9 +12,9 @@
     "no_mmproj": true,
     "jinja": true,
     "cram": 2048,
-    "top_k": 20,
-    "top_p": 0.8,
-    "temp": 0.7,
+    "temp": 0.8,
+    "top_p": 0.95,
+    "top_k": 64,
     "presence_penalty": 1.5,
     "reasoning": "auto",
     "prefill_assistant": false
@@ -35,17 +35,7 @@
       "reasoning_budget": -1,
       "temp": 0.6,
       "top_p": 0.95,
-      "min_p": 0.0,
       "presence_penalty": 0.0,
-      "repeat_penalty": 1.0
-    },
-    "thinking-unrestricted-chat": {
-      "reasoning": "on",
-      "reasoning_budget": -1,
-      "temp": 1.0,
-      "top_p": 0.95,
-      "min_p": 0.0,
-      "presence_penalty": 1.5,
       "repeat_penalty": 1.0
     },
     "thinking-budgeted": {
@@ -53,15 +43,8 @@
       "reasoning_budget": 8192,
       "temp": 0.6,
       "top_p": 0.95,
-      "min_p": 0.0,
       "presence_penalty": 0.0,
       "repeat_penalty": 1.0
-    },
-    "thinking-budgeted-chat": {
-      "reasoning": "on",
-      "reasoning_budget": 8192,
-      "temp": 0.7,
-      "top_p": 0.8
     },
     "thinking-disabled": {
       "reasoning": "off",

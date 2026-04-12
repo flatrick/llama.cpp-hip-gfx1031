@@ -2,9 +2,7 @@
   "name": "Qwen3.5-0.8B UD-Q5_K_XL",
   "hf": "unsloth/Qwen3.5-0.8B-GGUF:UD-Q5_K_XL",
   "defaults": {
-    "ctx_size": 230686,
-    "cache_k": "f16",
-    "cache_v": "f16",
+    "ctx_size": 262144,
     "batch_size": 1024,
     "ubatch_size": 256,
     "n_gpu_layers": -1,
@@ -17,18 +15,57 @@
     "top_k": 20,
     "top_p": 0.8,
     "temp": 0.7,
-    "presence_penalty": 1.5
+    "presence_penalty": 1.5,
+    "reasoning": "auto",
+    "prefill_assistant": false
   },
   "backends": {
-    "vulkan-docker": {
-      "ctx_size": 262144,
-      "cache_k": "q8_0",
-      "cache_v": "q8_0"
+    "rocm": {
+      "cache_k": "f16",
+      "cache_v": "f16"
     },
     "vulkan": {
-      "ctx_size": 262144,
       "cache_k": "q8_0",
       "cache_v": "q8_0"
+    }
+  },
+  "presets": {
+    "thinking-unrestricted": {
+      "reasoning": "on",
+      "reasoning_budget": -1,
+      "temp": 0.6,
+      "top_p": 0.95,
+      "min_p": 0.0,
+      "presence_penalty": 0.0,
+      "repeat_penalty": 1.0
+    },
+    "thinking-unrestricted-chat": {
+      "reasoning": "on",
+      "reasoning_budget": -1,
+      "temp": 1.0,
+      "top_p": 0.95,
+      "min_p": 0.0,
+      "presence_penalty": 1.5,
+      "repeat_penalty": 1.0
+    },
+    "thinking-budgeted": {
+      "reasoning": "on",
+      "reasoning_budget": 8192,
+      "temp": 0.6,
+      "top_p": 0.95,
+      "min_p": 0.0,
+      "presence_penalty": 0.0,
+      "repeat_penalty": 1.0
+    },
+    "thinking-budgeted-chat": {
+      "reasoning": "on",
+      "reasoning_budget": 8192,
+      "temp": 0.7,
+      "top_p": 0.8
+    },
+    "thinking-disabled": {
+      "reasoning": "off",
+      "reasoning_budget": 0
     }
   }
 }

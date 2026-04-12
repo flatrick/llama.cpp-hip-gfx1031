@@ -1,3 +1,4 @@
 # Runtime logs
 logfile
 *.log
+__pycache__/

@@ -27,7 +27,7 @@ EOF
 }
 
 sanitize_tag() {
-  printf '%s' "$1" | tr '/:@ ' '-' | tr -cd '[:alnum:]._-\n'
+  printf '%s' "$1" | sed 's|[/:@ ]|-|g; s|[^[:alnum:]._-]||g'
 }
 
 while [[ $# -gt 0 ]]; do
@@ -102,6 +102,6 @@ cat <<EOF
 Built image: $IMAGE_NAME
 
 Run an existing launcher against it with:
-  VULKAN_IMAGE=$IMAGE_NAME bash Qwen3.5-2B-UD-Q5_K_XL.200k.vulkan.sh
+  python run.py --backend vulkan --container --model qwen3.5-9b --preset thinking-unrestricted --image $IMAGE_NAME
 
 EOF

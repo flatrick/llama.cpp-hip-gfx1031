@@ -8,38 +8,31 @@
         "apiKey": "dummy"
       },
       "models": {
-        "qwen3.5-0.8b-ud-q5_k_xl": {
-          "name": "Qwen3.5-0.8B UD-Q5_K_XL (q8_0 KV, ctx 230686)",
+        "qwen3.5-0.8b-ud-q5_k_xl_rocm": {
+          "name": "Qwen3.5-0.8B UD-Q5_K_XL (q8_0 KV, ctx 131072, ROCm)",
           "maxTokens": 16384,
-          "contextLength": 230686,
+          "contextLength": 131072,
           "tool_call": true,
           "reasoning": true
         },
-        "qwen3.5-2b-ud-q5_k_xl": {
-          "name": "Qwen3.5-2B UD-Q5_K_XL (q8_0 KV, ctx 209715)",
-          "maxTokens": 16384,
-          "contextLength": 209715,
-          "tool_call": true,
-          "reasoning": true
-        },
-        "qwen3.5-4b-ud-q5_k_xl": {
-          "name": "Qwen3.5-4B UD-Q5_K_XL (q8_0 KV, ctx 81920)",
-          "maxTokens": 16384,
-          "contextLength": 81920,
-          "tool_call": true,
-          "reasoning": true
-        },
-        "qwen3.5-9b-ud-q5_k_xl": {
+        "qwen3.5-9b-ud-q5_k_xl_vulkan": {
           "name": "Qwen3.5-9B UD-Q5_K_XL (q8_0 KV, ctx 262,144, Vulkan)",
           "maxTokens": 16384,
           "contextLength": 262144,
           "tool_call": true,
           "reasoning": true
+        },
+        "gemma-4-vulkan": {
+          "name": "gemma 4 (q8_0 KV, ctx 262,144, Vulkan)",
+          "maxTokens": 16384,
+          "contextLength": 262144,
+          "tool_call": true,
+          "reasoning": true
         }
-      }
+     }
     }
   },
-  "model": "local-llama/qwen3.5-9b-ud-q5_k_xl",
+  "model": "local-llama/gemma-4-vulkan",
   "permission": {
     "bash": "ask",
     "edit": "allow",
