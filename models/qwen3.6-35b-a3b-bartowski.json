@@ -1,0 +1,73 @@
+{
+  "name": "Qwen3-35B-A3B Q5_K_M (bartowski)",
+  "hf": "bartowski/Qwen_Qwen3.6-35B-A3B-GGUF:Q5_K_M",
+  "defaults": {
+    "ctx_size": 262144,
+    "batch_size": 1024,
+    "ubatch_size": 256,
+    "n_gpu_layers": 999,
+    "n_cpu_moe": 20,
+    "parallel": 1,
+    "flash_attn": true,
+    "no_warmup": false,
+    "no_mmproj": true,
+    "jinja": true,
+    "cram": 2048,
+    "top_k": 20,
+    "top_p": 0.8,
+    "temp": 0.7,
+    "presence_penalty": 1.5,
+    "reasoning": "auto",
+    "prefill_assistant": false
+  },
+  "backends": {
+    "rocm": {
+      "cache_k": "q8_0",
+      "cache_v": "q8_0",
+      "no_mmap": true
+    },
+    "vulkan": {
+      "cache_k": "q8_0",
+      "cache_v": "q8_0"
+    }
+  },
+  "presets": {
+    "thinking-unrestricted": {
+      "reasoning": "on",
+      "reasoning_budget": -1,
+      "temp": 0.6,
+      "top_p": 0.95,
+      "min_p": 0.0,
+      "presence_penalty": 0.0,
+      "repeat_penalty": 1.0
+    },
+    "thinking-unrestricted-chat": {
+      "reasoning": "on",
+      "reasoning_budget": -1,
+      "temp": 1.0,
+      "top_p": 0.95,
+      "min_p": 0.0,
+      "presence_penalty": 1.5,
+      "repeat_penalty": 1.0
+    },
+    "thinking-budgeted": {
+      "reasoning": "on",
+      "reasoning_budget": 8192,
+      "temp": 0.6,
+      "top_p": 0.95,
+      "min_p": 0.0,
+      "presence_penalty": 0.0,
+      "repeat_penalty": 1.0
+    },
+    "thinking-budgeted-chat": {
+      "reasoning": "on",
+      "reasoning_budget": 8192,
+      "temp": 0.7,
+      "top_p": 0.8
+    },
+    "thinking-disabled": {
+      "reasoning": "off",
+      "reasoning_budget": 0
+    }
+  }
+}

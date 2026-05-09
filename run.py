@@ -183,6 +183,8 @@ def build_server_args(hf: str, settings: dict[str, Any], port: int, host: str) -
     ]
     if settings.get("flash_attn", True):
         args += ["--flash-attn", "on"]
+    if settings.get("no_mmap", False):
+        args.append("--no-mmap")
     if settings.get("no_warmup", False):
         args.append("--no-warmup")
     if settings.get("no_mmproj", False):
@@ -191,6 +193,12 @@ def build_server_args(hf: str, settings: dict[str, Any], port: int, host: str) -
         args.append("--jinja")
     if settings.get("cram"):
         args += ["-cram", str(settings["cram"])]
+    n_cpu_moe = settings.get("n_cpu_moe")
+    if n_cpu_moe is not None:
+        args += ["--n-cpu-moe", str(n_cpu_moe)]
+    model_draft = settings.get("model_draft")
+    if model_draft is not None:
+        args += ["--model-draft", str(model_draft)]
     reasoning = settings.get("reasoning")
     if reasoning is not None:
         args += ["--reasoning", str(reasoning)]
@@ -439,6 +447,14 @@ def main() -> None:
         help="Repeat penalty (overrides model default)",
     )
     parser.add_argument(
+        "--n-cpu-moe", dest="n_cpu_moe", type=int, default=None, metavar="N",
+        help="Number of MoE expert layers to offload to CPU (overrides model default)",
+    )
+    parser.add_argument(
+        "--model-draft", dest="model_draft", default=None, metavar="PATH",
+        help="Path to draft model GGUF for speculative decoding (overrides model default)",
+    )
+    parser.add_argument(
         "--port", type=int, default=DEFAULT_PORT,
         help=f"Port to expose/bind (default: {DEFAULT_PORT})",
     )
@@ -515,6 +531,8 @@ def main() -> None:
         "prefill_assistant": args.prefill_assistant,
         "min_p": args.min_p,
         "repeat_penalty": args.repeat_penalty,
+        "n_cpu_moe": args.n_cpu_moe,
+        "model_draft": args.model_draft,
     }
     settings = resolve_settings(cfg, args.preset, args.backend, cli_overrides)
 
