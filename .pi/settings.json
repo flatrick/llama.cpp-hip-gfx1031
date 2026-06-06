@@ -1,0 +1,16 @@
+{
+  "lastChangelogVersion": "0.78.1",
+  "terminal": {
+    "showTerminalProgress": true
+  },
+  "steeringMode": "all",
+  "followUpMode": "all",
+  "transport": "auto",
+  "treeFilterMode": "default",
+  "theme": "dark",
+  "compaction": {
+    "enabled": true
+  },
+  "defaultProvider": "llama-cpp",
+  "defaultModel": "gemma-4:12b"
+}

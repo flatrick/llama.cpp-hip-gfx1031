@@ -22,10 +22,17 @@
           "tool_call": true,
           "reasoning": true
         },
-        "gemma-4-vulkan": {
-          "name": "gemma 4 (q8_0 KV, ctx 262,144, Vulkan)",
+        "gemma-4-e4b-vulkan": {
+          "name": "gemma 4 e4b (q8_0 KV, ctx 262,144, Vulkan)",
           "maxTokens": 16384,
           "contextLength": 262144,
+          "tool_call": true,
+          "reasoning": true
+        },
+        "gemma-4-12b-rocm": {
+          "name": "gemma 4 12b (q8_0 KV, ctx 131,072, ROCm)",
+          "maxTokens": 16384,
+          "contextLength": 131072,
           "tool_call": true,
           "reasoning": true
         }
