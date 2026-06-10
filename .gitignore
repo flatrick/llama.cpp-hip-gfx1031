@@ -2,3 +2,4 @@
 logfile
 *.log
 __pycache__/
+state/
