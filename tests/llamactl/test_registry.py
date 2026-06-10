@@ -61,3 +61,11 @@ def test_add_replaces_same_target_and_sha() -> None:
 def test_remove_by_target_and_sha() -> None:
     result = remove_artifact([IMAGE, NATIVE], "rocm-image", IMAGE.sha)
     assert result == [NATIVE]
+
+
+def test_save_is_atomic_no_temp_file_left(tmp_path: Path) -> None:
+    path = tmp_path / "registry.toml"
+    save_registry(path, [IMAGE])
+    leftovers = [p for p in tmp_path.iterdir() if p != path]
+    assert leftovers == []
+    assert load_registry(path) == [IMAGE]

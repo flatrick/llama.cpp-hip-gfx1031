@@ -2,6 +2,11 @@
 
 Stored as [[artifact]] tables in state/registry.toml. All list operations
 return new lists (no mutation).
+
+Writes are atomic (temp file + replace) so a crash never corrupts the
+registry. built_at is stored as an ISO-8601 string (not TOML datetime) to
+keep load/save round-trips equality-stable; parse/IO errors propagate raw
+because this file is self-written state, not hand-edited config.
 """
 
 from __future__ import annotations
@@ -49,7 +54,9 @@ def save_registry(path: Path, artifacts: list[Artifact]) -> None:
         aot.append(table)
     doc["artifact"] = aot
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(tomlkit.dumps(doc), encoding="utf-8")
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(tomlkit.dumps(doc), encoding="utf-8")
+    tmp.replace(path)
 
 
 def add_artifact(artifacts: list[Artifact], new: Artifact) -> list[Artifact]:
