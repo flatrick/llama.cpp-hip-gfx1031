@@ -51,6 +51,22 @@ def _require_str(path: Path, key: str, value: Any) -> str:
     return value
 
 
+def _require_int(path: Path, key: str, value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigError(
+            f"{path}: '{key}' must be an integer, got {type(value).__name__}"
+        )
+    return value
+
+
+def _require_float(path: Path, key: str, value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(
+            f"{path}: '{key}' must be a number, got {type(value).__name__}"
+        )
+    return float(value)
+
+
 def load_model(path: Path) -> ModelConfig:
     try:
         with path.open("rb") as f:
@@ -129,13 +145,31 @@ def load_global(path: Path) -> GlobalConfig:
             data = tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ConfigError(f"{path}: {exc}") from exc
-    defaults = GlobalConfig()
-    return GlobalConfig(
-        default_backend=data.get("default_backend", defaults.default_backend),
-        default_mode=data.get("default_mode", defaults.default_mode),
-        port=data.get("port", defaults.port),
-        vram_budget_gb=data.get("vram_budget_gb", defaults.vram_budget_gb),
-        hf_cache=Path(data.get("hf_cache", defaults.hf_cache)).expanduser(),
-        llama_cache=Path(data.get("llama_cache", defaults.llama_cache)).expanduser(),
-        name_prefix=data.get("name_prefix", defaults.name_prefix),
-    )
+    kwargs: dict[str, Any] = {}
+    if "default_backend" in data:
+        kwargs["default_backend"] = _require_str(
+            path, "default_backend", data["default_backend"]
+        )
+    if "default_mode" in data:
+        kwargs["default_mode"] = _require_str(
+            path, "default_mode", data["default_mode"]
+        )
+    if "port" in data:
+        kwargs["port"] = _require_int(path, "port", data["port"])
+    if "vram_budget_gb" in data:
+        kwargs["vram_budget_gb"] = _require_float(
+            path, "vram_budget_gb", data["vram_budget_gb"]
+        )
+    if "hf_cache" in data:
+        kwargs["hf_cache"] = Path(
+            _require_str(path, "hf_cache", data["hf_cache"])
+        ).expanduser()
+    if "llama_cache" in data:
+        kwargs["llama_cache"] = Path(
+            _require_str(path, "llama_cache", data["llama_cache"])
+        ).expanduser()
+    if "name_prefix" in data:
+        kwargs["name_prefix"] = _require_str(
+            path, "name_prefix", data["name_prefix"]
+        )
+    return GlobalConfig(**kwargs)

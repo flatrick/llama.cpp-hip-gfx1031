@@ -184,3 +184,28 @@ def test_load_global_bad_toml_raises(tmp_path: Path) -> None:
     path = write(tmp_path, "g.toml", "port = [broken\n")
     with pytest.raises(ConfigError):
         load_global(path)
+
+
+def test_load_global_wrong_typed_port_raises(tmp_path: Path) -> None:
+    path = write(tmp_path, "g.toml", 'port = "8080"\n')
+    with pytest.raises(ConfigError, match="port"):
+        load_global(path)
+
+
+def test_load_global_non_numeric_vram_raises(tmp_path: Path) -> None:
+    path = write(tmp_path, "g.toml", 'vram_budget_gb = "x"\n')
+    with pytest.raises(ConfigError, match="vram_budget_gb"):
+        load_global(path)
+
+
+def test_load_global_int_vram_accepted_as_float(tmp_path: Path) -> None:
+    path = write(tmp_path, "g.toml", "vram_budget_gb = 11\n")
+    cfg = load_global(path)
+    assert cfg.vram_budget_gb == 11.0
+    assert isinstance(cfg.vram_budget_gb, float)
+
+
+def test_checked_in_global_config_equals_defaults() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    cfg = load_global(repo_root / "configs" / "llamactl.toml")
+    assert cfg == GlobalConfig()
