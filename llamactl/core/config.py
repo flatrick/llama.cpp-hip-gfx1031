@@ -24,6 +24,22 @@ class ModelConfig:
     path: Path
 
 
+def _require_table(path: Path, key: str, value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ConfigError(
+            f"{path}: '{key}' must be a table, got {type(value).__name__}"
+        )
+    return value
+
+
+def _require_str(path: Path, key: str, value: Any) -> str:
+    if not isinstance(value, str):
+        raise ConfigError(
+            f"{path}: '{key}' must be a string, got {type(value).__name__}"
+        )
+    return value
+
+
 def load_model(path: Path) -> ModelConfig:
     try:
         with path.open("rb") as f:
@@ -32,14 +48,30 @@ def load_model(path: Path) -> ModelConfig:
         raise ConfigError(f"{path}: {exc}") from exc
     if "hf" not in data:
         raise ConfigError(f"{path}: missing required key 'hf'")
+    hf = _require_str(path, "hf", data["hf"])
+    name = _require_str(path, "name", data.get("name", path.stem))
+    settings = dict(_require_table(path, "settings", data.get("settings", {})))
+    backends = {
+        k: dict(_require_table(path, f"backends.{k}", v))
+        for k, v in _require_table(
+            path, "backends", data.get("backends", {})
+        ).items()
+    }
+    presets = {
+        k: dict(_require_table(path, f"presets.{k}", v))
+        for k, v in _require_table(
+            path, "presets", data.get("presets", {})
+        ).items()
+    }
+    images = dict(_require_table(path, "images", data.get("images", {})))
     return ModelConfig(
         id=path.stem,
-        name=data.get("name", path.stem),
-        hf=data["hf"],
-        settings=dict(data.get("settings", {})),
-        backends={k: dict(v) for k, v in data.get("backends", {}).items()},
-        presets={k: dict(v) for k, v in data.get("presets", {}).items()},
-        images=dict(data.get("images", {})),
+        name=name,
+        hf=hf,
+        settings=settings,
+        backends=backends,
+        presets=presets,
+        images=images,
         path=path,
     )
 

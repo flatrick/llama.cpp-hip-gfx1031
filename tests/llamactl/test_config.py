@@ -68,3 +68,29 @@ def test_load_all_empty_dir(tmp_path: Path) -> None:
     configs, errors = load_all(tmp_path)
     assert configs == []
     assert errors == {}
+
+
+def test_load_model_non_table_section_raises(tmp_path: Path) -> None:
+    path = write(tmp_path, "bad-shape.toml", 'hf = "org/x:Q5"\nbackends = 3\n')
+    with pytest.raises(ConfigError, match="backends"):
+        load_model(path)
+
+
+def test_load_model_non_table_backend_entry_raises(tmp_path: Path) -> None:
+    path = write(tmp_path, "bad-entry.toml", 'hf = "org/x:Q5"\n[backends]\nrocm = 3\n')
+    with pytest.raises(ConfigError, match="backends.rocm"):
+        load_model(path)
+
+
+def test_load_model_non_string_hf_raises(tmp_path: Path) -> None:
+    path = write(tmp_path, "bad-hf.toml", "hf = 42\n")
+    with pytest.raises(ConfigError, match="hf"):
+        load_model(path)
+
+
+def test_load_all_isolates_wrong_shaped_section(tmp_path: Path) -> None:
+    write(tmp_path, "good.toml", VALID_TOML)
+    bad = write(tmp_path, "shape.toml", 'hf = "org/x:Q5"\nimages = [1, 2]\n')
+    configs, errors = load_all(tmp_path)
+    assert [m.id for m in configs] == ["good"]
+    assert list(errors) == [bad]
