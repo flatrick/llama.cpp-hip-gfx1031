@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from llamactl.core.config import ConfigError, ModelConfig, load_all, load_model
+from llamactl.core.config import ConfigError, ModelConfig, load_all, load_model, resolve_settings
 
 VALID_TOML = """\
 name = "Test Model"
@@ -94,3 +94,64 @@ def test_load_all_isolates_wrong_shaped_section(tmp_path: Path) -> None:
     configs, errors = load_all(tmp_path)
     assert [m.id for m in configs] == ["good"]
     assert list(errors) == [bad]
+
+
+def make_model(tmp_path: Path) -> ModelConfig:
+    content = """\
+name = "Layered"
+hf = "org/layered:Q5"
+
+[settings]
+ctx_size = 262144
+temp = 0.7
+cache_type_k = "f16"
+
+[backends.rocm]
+cache_type_k = "q8_0"
+no_mmap = true
+
+[presets.cool]
+temp = 0.3
+cache_type_k = "q4_0"
+"""
+    return load_model(write(tmp_path, "layered.toml", content))
+
+
+def test_resolve_defaults_only(tmp_path: Path) -> None:
+    model = make_model(tmp_path)
+    settings = resolve_settings(model, None, "vulkan", {})
+    assert settings == {"ctx_size": 262144, "temp": 0.7, "cache_type_k": "f16"}
+
+
+def test_backend_overrides_preset(tmp_path: Path) -> None:
+    model = make_model(tmp_path)
+    settings = resolve_settings(model, "cool", "rocm", {})
+    # preset set temp and cache_type_k; backend wins on cache_type_k
+    assert settings["temp"] == 0.3
+    assert settings["cache_type_k"] == "q8_0"
+    assert settings["no_mmap"] is True
+
+
+def test_overrides_win_over_everything(tmp_path: Path) -> None:
+    model = make_model(tmp_path)
+    settings = resolve_settings(model, "cool", "rocm", {"cache_type_k": "f16"})
+    assert settings["cache_type_k"] == "f16"
+
+
+def test_none_overrides_are_ignored(tmp_path: Path) -> None:
+    model = make_model(tmp_path)
+    settings = resolve_settings(model, None, "rocm", {"temp": None})
+    assert settings["temp"] == 0.7
+
+
+def test_unknown_preset_raises_with_available_list(tmp_path: Path) -> None:
+    model = make_model(tmp_path)
+    with pytest.raises(ConfigError, match="cool"):
+        resolve_settings(model, "c00l", "rocm", {})
+
+
+def test_resolution_does_not_mutate_model(tmp_path: Path) -> None:
+    model = make_model(tmp_path)
+    before = dict(model.settings)
+    resolve_settings(model, "cool", "rocm", {"extra": 1})
+    assert model.settings == before

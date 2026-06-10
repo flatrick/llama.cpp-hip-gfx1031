@@ -86,3 +86,24 @@ def load_all(models_dir: Path) -> tuple[list[ModelConfig], dict[Path, str]]:
         except ConfigError as exc:
             errors[path] = str(exc)
     return configs, errors
+
+
+def resolve_settings(
+    model: ModelConfig,
+    preset: str | None,
+    backend: str,
+    overrides: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge layers: settings -> preset -> backend -> overrides (later wins)."""
+    settings = dict(model.settings)
+    if preset is not None:
+        if preset not in model.presets:
+            available = ", ".join(model.presets) or "(none)"
+            raise ConfigError(
+                f"preset '{preset}' not found for model '{model.id}'; "
+                f"available: {available}"
+            )
+        settings.update(model.presets[preset])
+    settings.update(model.backends.get(backend, {}))
+    settings.update({k: v for k, v in overrides.items() if v is not None})
+    return settings
