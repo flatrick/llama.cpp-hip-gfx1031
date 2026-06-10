@@ -1,0 +1,11 @@
+# llamactl global configuration — values shown are also the built-in defaults.
+
+default_backend = "rocm"      # rocm | vulkan
+default_mode = "container"    # container | native
+port = 8080
+vram_budget_gb = 11.0         # warn threshold on the 12 GB gfx1031 card
+name_prefix = "llamactl"      # container-name / label prefix
+
+# Cache mounts (defaults shown; uncomment to override)
+# hf_cache = "~/.cache/huggingface"
+# llama_cache = "~/.cache/llama.cpp"

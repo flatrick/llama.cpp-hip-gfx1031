@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from llamactl.core.config import ConfigError, ModelConfig, load_all, load_model, resolve_settings
+from llamactl.core.config import ConfigError, GlobalConfig, ModelConfig, load_all, load_global, load_model, resolve_settings
 
 VALID_TOML = """\
 name = "Test Model"
@@ -155,3 +155,32 @@ def test_resolution_does_not_mutate_model(tmp_path: Path) -> None:
     before = dict(model.settings)
     resolve_settings(model, "cool", "rocm", {"extra": 1})
     assert model.settings == before
+
+
+def test_load_global_missing_file_returns_defaults(tmp_path: Path) -> None:
+    cfg = load_global(tmp_path / "nope.toml")
+    assert cfg == GlobalConfig()
+    assert cfg.default_backend == "rocm"
+    assert cfg.port == 8080
+    assert cfg.vram_budget_gb == 11.0
+    assert cfg.name_prefix == "llamactl"
+
+
+def test_load_global_partial_file_fills_defaults(tmp_path: Path) -> None:
+    path = write(tmp_path, "g.toml", 'default_backend = "vulkan"\nport = 8081\n')
+    cfg = load_global(path)
+    assert cfg.default_backend == "vulkan"
+    assert cfg.port == 8081
+    assert cfg.default_mode == "container"  # untouched default
+
+
+def test_load_global_expands_user_paths(tmp_path: Path) -> None:
+    path = write(tmp_path, "g.toml", 'hf_cache = "~/somewhere"\n')
+    cfg = load_global(path)
+    assert "~" not in str(cfg.hf_cache)
+
+
+def test_load_global_bad_toml_raises(tmp_path: Path) -> None:
+    path = write(tmp_path, "g.toml", "port = [broken\n")
+    with pytest.raises(ConfigError):
+        load_global(path)

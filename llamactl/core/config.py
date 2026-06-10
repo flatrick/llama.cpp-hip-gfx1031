@@ -13,6 +13,17 @@ class ConfigError(Exception):
 
 
 @dataclass(frozen=True)
+class GlobalConfig:
+    default_backend: str = "rocm"
+    default_mode: str = "container"
+    port: int = 8080
+    vram_budget_gb: float = 11.0
+    hf_cache: Path = Path("~/.cache/huggingface").expanduser()
+    llama_cache: Path = Path("~/.cache/llama.cpp").expanduser()
+    name_prefix: str = "llamactl"
+
+
+@dataclass(frozen=True)
 class ModelConfig:
     id: str
     name: str
@@ -107,3 +118,24 @@ def resolve_settings(
     settings.update(model.backends.get(backend, {}))
     settings.update({k: v for k, v in overrides.items() if v is not None})
     return settings
+
+
+def load_global(path: Path) -> GlobalConfig:
+    """Load global config from TOML file; missing file returns defaults."""
+    if not path.exists():
+        return GlobalConfig()
+    try:
+        with path.open("rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ConfigError(f"{path}: {exc}") from exc
+    defaults = GlobalConfig()
+    return GlobalConfig(
+        default_backend=data.get("default_backend", defaults.default_backend),
+        default_mode=data.get("default_mode", defaults.default_mode),
+        port=data.get("port", defaults.port),
+        vram_budget_gb=data.get("vram_budget_gb", defaults.vram_budget_gb),
+        hf_cache=Path(data.get("hf_cache", defaults.hf_cache)).expanduser(),
+        llama_cache=Path(data.get("llama_cache", defaults.llama_cache)).expanduser(),
+        name_prefix=data.get("name_prefix", defaults.name_prefix),
+    )
