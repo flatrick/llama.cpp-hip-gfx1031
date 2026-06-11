@@ -60,6 +60,10 @@ def test_convert_materializes_run_py_implicit_defaults() -> None:
     assert settings["repeat_penalty"] == 1.0
     assert settings["jinja"] is True
     assert settings["top_k"] == 20
+    # cache types are NOT materialized: llama-server's own default is f16
+    # (same as run.py's fallback), and models define cache types per-backend
+    assert "cache_type_k" not in settings
+    assert "cache_type_v" not in settings
     # explicit values are never clobbered by the injection
     assert settings["ctx_size"] == 262144
     # injection applies to [settings] only, not backends/presets

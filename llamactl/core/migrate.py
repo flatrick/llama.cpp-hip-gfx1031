@@ -33,13 +33,14 @@ KNOWN_TOP_LEVEL: frozenset[str] = frozenset(
 # Fallback values run.py's build_server_args() hardcoded for absent keys.
 # Keys run.py only emitted when present (reasoning, cram, n_cpu_moe,
 # model_draft, no_mmap, no_warmup, no_mmproj, prefill_assistant) are NOT here.
+# cache_type_k/v are also excluded: run.py's "f16" fallback equals
+# llama-server's own default, and real models set cache types per-backend —
+# materializing a model-level value would only mislead the dashboard.
 RUN_PY_IMPLICIT_DEFAULTS: dict[str, Any] = {
     "n_gpu_layers": -1,
     "batch_size": 1024,
     "ubatch_size": 256,
     "parallel": 1,
-    "cache_type_k": "f16",
-    "cache_type_v": "f16",
     "top_k": 20,
     "top_p": 0.8,
     "temp": 0.7,
