@@ -4,7 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from llamactl.core.config import ConfigError, GlobalConfig, ModelConfig, load_all, load_global, load_model, resolve_settings
+from llamactl.core.config import (
+    ConfigError,
+    GlobalConfig,
+    ModelConfig,
+    load_all,
+    load_global,
+    load_model,
+    resolve_settings,
+)
 
 VALID_TOML = """\
 name = "Test Model"

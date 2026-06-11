@@ -58,3 +58,9 @@ def test_build_server_argv_wraps_hf_host_port() -> None:
         "--host", "0.0.0.0",
         "--port", "8080",
     ]
+
+
+def test_float_scientific_notation_pinned() -> None:
+    # str() of small floats yields scientific notation; llama-server's
+    # std::stof accepts it. Pin the format so a formatting change is caught.
+    assert to_argv({"min_p": 1e-05}) == ["--min-p", "1e-05"]
