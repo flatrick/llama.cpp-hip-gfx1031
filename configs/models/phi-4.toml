@@ -1,0 +1,51 @@
+name = "phi 4 Q4_K_M"
+hf = "unsloth/phi-4-GGUF:Q4_K_M"
+
+[settings]
+ctx_size = 16384
+batch_size = 1024
+ubatch_size = 256
+n_gpu_layers = -1
+parallel = 1
+flash_attn = "on"
+no_mmproj = true
+jinja = true
+cram = 2048
+temp = 0.8
+top_p = 0.95
+top_k = 64
+presence_penalty = 1.5
+reasoning = "auto"
+no_prefill_assistant = true
+cache_type_k = "f16"
+cache_type_v = "f16"
+min_p = 0.0
+repeat_penalty = 1.0
+
+[backends.rocm]
+cache_type_k = "f16"
+cache_type_v = "f16"
+
+[backends.vulkan]
+cache_type_k = "q8_0"
+cache_type_v = "q8_0"
+
+[presets.thinking-unrestricted]
+reasoning = "on"
+reasoning_budget = -1
+temp = 0.6
+top_p = 0.95
+presence_penalty = 0.0
+repeat_penalty = 1.0
+
+[presets.thinking-budgeted]
+reasoning = "on"
+reasoning_budget = 8192
+temp = 0.6
+top_p = 0.95
+presence_penalty = 0.0
+repeat_penalty = 1.0
+
+[presets.thinking-disabled]
+reasoning = "off"
+reasoning_budget = 0
