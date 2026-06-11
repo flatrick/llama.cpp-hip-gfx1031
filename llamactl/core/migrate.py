@@ -117,7 +117,7 @@ def migrate(
         try:
             raw = json.loads(json_path.read_text(encoding="utf-8"))
             doc, warnings = convert_model(raw, json_path.stem)
-        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        except Exception as exc:  # one bad file must not abort the batch
             results.append((dest, "failed", [f"{json_path}: {exc}"]))
             continue
         dest.parent.mkdir(parents=True, exist_ok=True)

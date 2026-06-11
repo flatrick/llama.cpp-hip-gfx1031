@@ -116,3 +116,20 @@ def test_migrate_reports_invalid_json_as_failed(tmp_path: Path) -> None:
     results = migrate(src, dest)
     assert [(p.name, status) for p, status, _ in results] == [("broken.toml", "failed")]
     assert not (dest / "broken.toml").exists()
+
+
+def test_migrate_isolates_malformed_section_and_continues(tmp_path: Path) -> None:
+    src = tmp_path / "models"
+    dest = tmp_path / "out"
+    src.mkdir()
+    (src / "a-bad.json").write_text(
+        json.dumps({"hf": "org/x:Q5", "defaults": []}), encoding="utf-8"
+    )
+    (src / "b-good.json").write_text(json.dumps(SAMPLE_JSON), encoding="utf-8")
+    results = migrate(src, dest)
+    assert [(p.name, status) for p, status, _ in results] == [
+        ("a-bad.toml", "failed"),
+        ("b-good.toml", "written"),
+    ]
+    assert not (dest / "a-bad.toml").exists()
+    assert (dest / "b-good.toml").exists()
