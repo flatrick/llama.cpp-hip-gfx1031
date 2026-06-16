@@ -8,9 +8,10 @@ the snapshot pipe uses Extractor. core never imports UI.
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -227,3 +228,45 @@ def export_snapshot(
     extract_cmd = ["tar", "-x", "-C", str(dest)]
     dest.mkdir(parents=True, exist_ok=True)
     extractor(archive_cmd, extract_cmd, dest)
+
+
+@dataclass(frozen=True)
+class ToolchainStatus:
+    ok: bool
+    missing: list[str] = field(default_factory=list)
+
+
+def detect_native_toolchain(
+    target: str,
+    which: Callable[[str], "str | None"] = shutil.which,
+    path_exists: Callable[[str], bool] = lambda p: Path(p).exists(),
+) -> ToolchainStatus:
+    """rocm-native: cmake/ninja/hipcc + /opt/rocm + hipblas headers + libcurl dev.
+    vulkan-native: cmake/ninja/glslc + vulkan headers + libcurl dev."""
+    missing: list[str] = []
+
+    def need_bin(name: str) -> None:
+        if which(name) is None:
+            missing.append(name)
+
+    if target == "rocm-native":
+        for b in ("cmake", "ninja", "hipcc"):
+            need_bin(b)
+        if not path_exists("/opt/rocm"):
+            missing.append("/opt/rocm")
+        hipblas_headers = ("/opt/rocm/include/hipblas/hipblas.h",
+                           "/opt/rocm/include/hipblas.h")
+        if not any(path_exists(p) for p in hipblas_headers):
+            missing.append("hipblas-dev")
+    elif target == "vulkan-native":
+        for b in ("cmake", "ninja", "glslc"):
+            need_bin(b)
+        if not path_exists("/usr/include/vulkan/vulkan.h"):
+            missing.append("libvulkan-dev")
+    else:
+        raise BuildError(f"not a native target: {target}")
+
+    if not path_exists("/usr/include/curl/curl.h"):
+        missing.append("libcurl-dev")
+
+    return ToolchainStatus(ok=not missing, missing=missing)

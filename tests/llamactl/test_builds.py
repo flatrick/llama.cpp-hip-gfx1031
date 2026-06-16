@@ -9,7 +9,9 @@ from llamactl.core.builds import (
     BuildError,
     ResolvedRef,
     StreamRunner,
+    ToolchainStatus,
     _select_latest_build_tag,
+    detect_native_toolchain,
     export_snapshot,
     image_tag_for,
     resolve_ref,
@@ -185,3 +187,27 @@ def test_export_remote_ref_fetches_then_archives_from_cache(tmp_path):
                         "--depth", "1", "origin", "refs/tags/b10"]]
     assert archive_holder["cmd"] == ["git", "-C", str(tmp_path / "cache"),
                                      "archive", "--format=tar", "aaa"]
+
+
+def test_rocm_toolchain_ok_when_all_present():
+    which = lambda n: f"/usr/bin/{n}"
+    exists = lambda p: True
+    st = detect_native_toolchain("rocm-native", which=which, path_exists=exists)
+    assert st == ToolchainStatus(ok=True, missing=[])
+
+
+def test_rocm_toolchain_reports_missing_hipcc_and_hipblas():
+    which = lambda n: None if n == "hipcc" else f"/usr/bin/{n}"
+    exists = lambda p: p == "/opt/rocm" or p.endswith("curl/curl.h")
+    st = detect_native_toolchain("rocm-native", which=which, path_exists=exists)
+    assert st.ok is False
+    assert "hipcc" in st.missing
+    assert "hipblas-dev" in st.missing
+
+
+def test_vulkan_toolchain_reports_missing_curl_dev():
+    which = lambda n: f"/usr/bin/{n}"
+    exists = lambda p: p == "/usr/include/vulkan/vulkan.h"  # curl header absent
+    st = detect_native_toolchain("vulkan-native", which=which, path_exists=exists)
+    assert st.ok is False
+    assert "libcurl-dev" in st.missing
