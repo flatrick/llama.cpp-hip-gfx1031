@@ -284,3 +284,26 @@ async def test_section_select_cleared_after_delete_model(tmp_path: Path) -> None
         # no real (non-NULL) options should remain.
         real_values = [v for _, v in sel._options if v is not Select.NULL]
         assert real_values == []
+
+
+@pytest.mark.asyncio
+async def test_serve_model_selection_preserved_on_refresh(tmp_path: Path) -> None:
+    from llamactl.ui.app import LlamaCtlApp
+    from llamactl.ui.screens.serve import _LaunchForm
+    from textual.widgets import Select
+
+    app = LlamaCtlApp(repo_root=_repo(tmp_path))
+    async with app.run_test(headless=True) as pilot:
+        # on_mount loads models but doesn't push them into the Select; a
+        # refresh_model_options() call is required first (same as the real
+        # Models-tab save path).  Populate options and then pick model "m".
+        form = app.query_one(_LaunchForm)
+        form.refresh_model_options()
+        await pilot.pause()
+        sel = form.query_one("#model-select", Select)
+        sel.value = "m"
+        await pilot.pause()
+        # Simulate a second Models-tab save triggering another refresh
+        form.refresh_model_options()
+        await pilot.pause()
+        assert sel.value == "m"   # selection preserved (model still exists)
