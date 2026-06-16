@@ -125,7 +125,7 @@ def _fake_stat(gid: int):
 def test_dri_passthrough_flags_device_and_group():
     nodes = ["/dev/dri/renderD128", "/dev/dri/card0"]
     device_flags, group_flags = dri_passthrough_flags(
-        _glob=lambda _pat: nodes,
+        _glob=lambda pat: ["/dev/dri/renderD128"] if "renderD" in pat else ["/dev/dri/card0"],
         _stat=lambda _p: _fake_stat(44),
     )
     assert "--device" in device_flags
@@ -137,7 +137,7 @@ def test_dri_passthrough_flags_device_and_group():
 def test_dri_passthrough_deduplicates_same_gid():
     nodes = ["/dev/dri/renderD128", "/dev/dri/card0"]
     _, group_flags = dri_passthrough_flags(
-        _glob=lambda _pat: nodes,
+        _glob=lambda pat: ["/dev/dri/renderD128"] if "renderD" in pat else ["/dev/dri/card0"],
         _stat=lambda _p: _fake_stat(44),  # both nodes share GID
     )
     assert group_flags.count("44") == 1
