@@ -316,3 +316,149 @@ class ServeScreen(Widget):
         yield _VramGauge()
         yield _LaunchForm(models, model_errors)
         yield RichLog(id="log-pane")
+
+    def on_mount(self) -> None:
+        """Re-attach to any already-running server, then start polling."""
+        import llamactl.core.lifecycle as _lc
+        app: LlamaCtlApp = self.app  # type: ignore[assignment]
+        info = _lc.find_running(app._global_cfg, app._state_dir)
+        if info is not None:
+            self._set_server(info)
+        self.set_interval(2.0, self._poll_vram_and_health)
+
+    def _set_server(self, info: ServerInfo | None) -> None:
+        """Update all reactive state when a server starts or stops."""
+        self._server_info = info
+        header = self.query_one(_StatusHeader)
+        header.info = info
+        form = self.query_one(_LaunchForm)
+        stop_btn = form.query_one("#btn-stop", Button)
+        launch_btn = form.query_one("#btn-launch", Button)
+        if info is not None:
+            stop_btn.disabled = False
+            launch_btn.disabled = True
+            header.state = ServerState.STARTING
+        else:
+            stop_btn.disabled = True
+            launch_btn.disabled = False
+            header.state = ServerState.STOPPED
+
+    async def _poll_vram_and_health(self) -> None:
+        """Called every 2 seconds by set_interval. Updates VRAM gauge and health state."""
+        if self._server_info is None:
+            return
+        import asyncio
+        from llamactl.core.monitor import check_health, read_vram_kib
+        app: LlamaCtlApp = self.app  # type: ignore[assignment]
+        port = self._server_info.port
+        pid = str(self._server_info.pid) if self._server_info.pid is not None else None
+
+        new_state = await asyncio.to_thread(check_health, port)
+
+        header = self.query_one(_StatusHeader)
+        header.state = new_state
+
+        if new_state == ServerState.EXITED:
+            self._set_server(None)
+            return
+
+        if pid is not None:
+            vram_kib = await asyncio.to_thread(read_vram_kib, pid)
+            gauge = self.query_one(_VramGauge)
+            gauge.vram_kib = vram_kib
+            gauge.budget_kib = int(app._global_cfg.vram_budget_gb * 1024 * 1024)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-launch":
+            self._action_launch()
+        elif event.button.id == "btn-stop":
+            self._action_stop()
+        elif event.button.id == "btn-copy-argv":
+            self._action_copy_argv()
+
+    def _action_launch(self) -> None:
+        from llamactl.core.lifecycle import (
+            launch_container,
+            launch_native,
+            resolve_image,
+        )
+        from llamactl.core.runtime import find_runtime
+        app: LlamaCtlApp = self.app  # type: ignore[assignment]
+        form = self.query_one(_LaunchForm)
+        model, backend, preset = form.get_launch_params()
+        if model is None:
+            self.notify("Select a model first.", severity="warning")
+            return
+        mode_select = form.query_one("#mode-select", Select)
+        mode = str(mode_select.value or "container")
+        log = self.query_one("#log-pane", RichLog)
+        try:
+            settings = resolve_settings(model, preset, backend, {})
+        except Exception as exc:
+            self.notify(str(exc), severity="error")
+            return
+        try:
+            if mode == "container":
+                rt = find_runtime()
+                if rt is None:
+                    self.notify("No container runtime found (podman/docker).", severity="error")
+                    return
+                image = resolve_image(model, backend)
+                info = launch_container(
+                    runtime=rt,
+                    global_cfg=app._global_cfg,
+                    model=model,
+                    resolved_settings=settings,
+                    backend=backend,
+                    preset=preset or "",
+                    image=image,
+                    state_dir=app._state_dir,
+                )
+                log.write(f"[green]Container started:[/green] {info.container_name}")
+            else:
+                import shutil as _shutil
+                binary = _shutil.which("llama-server") or ""
+                if not binary:
+                    self.notify("llama-server not found in PATH.", severity="error")
+                    return
+                info = launch_native(
+                    global_cfg=app._global_cfg,
+                    model=model,
+                    resolved_settings=settings,
+                    backend=backend,
+                    preset=preset or "",
+                    binary=binary,
+                    state_dir=app._state_dir,
+                )
+                log.write(f"[green]Native server started:[/green] PID {info.pid}")
+        except Exception as exc:
+            self.notify(f"Launch failed: {exc}", severity="error")
+            log.write(f"[red]Launch error:[/red] {exc}")
+            return
+        self._set_server(info)
+
+    def _action_stop(self) -> None:
+        if self._server_info is None:
+            return
+        from llamactl.core.lifecycle import stop_server
+        from llamactl.core.runtime import find_runtime
+        log = self.query_one("#log-pane", RichLog)
+        try:
+            rt = find_runtime() if self._server_info.mode == "container" else None
+            stop_server(self._server_info, runtime=rt)
+            log.write("[yellow]Server stopped.[/yellow]")
+        except Exception as exc:
+            self.notify(f"Stop failed: {exc}", severity="error")
+            log.write(f"[red]Stop error:[/red] {exc}")
+        self._set_server(None)
+
+    def _action_copy_argv(self) -> None:
+        form = self.query_one(_LaunchForm)
+        preview = form.query_one("#argv-preview", Static)
+        text = str(preview.renderable)
+        try:
+            import pyperclip  # optional dep
+            pyperclip.copy(text)
+            self.notify("argv copied to clipboard.")
+        except Exception:
+            self.notify("Install pyperclip to enable copy.", severity="warning")

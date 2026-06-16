@@ -83,3 +83,33 @@ async def test_argv_preview_widget_is_present(tmp_path: Path) -> None:
         # The argv preview Static must be present in the DOM
         preview = app.query_one("#argv-preview", Static)
         assert preview is not None
+
+
+@pytest.mark.asyncio
+async def test_serve_screen_reattaches_on_mount(tmp_path: Path, monkeypatch) -> None:
+    """find_running is called on mount; if a server is already up, status updates."""
+    from llamactl.core.lifecycle import ServerInfo
+    from llamactl.ui.app import LlamaCtlApp
+    import llamactl.core.lifecycle as lc_mod
+
+    fake_info = ServerInfo(
+        model_id="qwen3-9b", backend="rocm", preset="",
+        mode="container", host="0.0.0.0", port=8080,
+        started_at="2026-06-16T14:00:00",
+        container_name="llamactl-qwen3-9b",
+    )
+    monkeypatch.setattr(lc_mod, "find_running", lambda *_a, **_kw: fake_info)
+
+    (tmp_path / "configs" / "models").mkdir(parents=True)
+    (tmp_path / "configs" / "llamactl.toml").write_text(
+        'default_backend = "rocm"\ndefault_mode = "container"\n'
+        'port = 8080\nvram_budget_gb = 11.0\nname_prefix = "llamactl"\n'
+    )
+    (tmp_path / "state").mkdir()
+
+    app = LlamaCtlApp(repo_root=tmp_path)
+    async with app.run_test(headless=True) as pilot:
+        from llamactl.ui.screens.serve import ServeScreen
+        serve = app.query_one(ServeScreen)
+        assert serve.has_running_server
+        assert serve._server_info == fake_info
