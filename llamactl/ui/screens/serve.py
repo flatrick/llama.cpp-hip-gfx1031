@@ -215,6 +215,15 @@ class _LaunchForm(Widget):
         )
         yield Select(options=[], id="preset-select", allow_blank=True)
 
+        # Artifact picker — image tags from the registry; blank = default image.
+        app = self.app
+        artifacts = getattr(app, "_artifacts", [])
+        artifact_options = [
+            (f"{a.image_tag}  ({a.requested_ref})", a.image_tag)
+            for a in artifacts if a.image_tag
+        ]
+        yield Select(options=artifact_options, id="artifact-select", allow_blank=True)
+
         with Widget(classes="button-row"):
             yield Button("Launch", id="btn-launch", variant="success")
             yield Button("Stop", id="btn-stop", variant="error", disabled=True)
@@ -259,6 +268,30 @@ class _LaunchForm(Widget):
         except NoMatches:
             return None
 
+    def refresh_artifact_options(self) -> None:
+        """Repopulate the artifact select from app._artifacts (called after app.on_mount)."""
+        try:
+            sel = self.query_one("#artifact-select", Select)
+        except NoMatches:
+            return
+        app = self.app
+        artifacts = getattr(app, "_artifacts", [])
+        artifact_options = [
+            (f"{a.image_tag}  ({a.requested_ref})", a.image_tag)
+            for a in artifacts if a.image_tag
+        ]
+        sel.set_options(artifact_options)
+
+    def _get_selected_artifact(self) -> str | None:
+        try:
+            sel = self.query_one("#artifact-select", Select)
+        except NoMatches:
+            return None
+        value = sel.value
+        if value is Select.BLANK or value is None:
+            return None
+        return str(value)
+
     def _refresh_preset_options(self) -> None:
         try:
             preset_select = self.query_one("#preset-select", Select)
@@ -298,12 +331,13 @@ class _LaunchForm(Widget):
 
     def get_launch_params(
         self,
-    ) -> tuple[ModelConfig | None, str, str | None]:
-        """Return (selected model, selected backend, selected preset or None)."""
+    ) -> tuple[ModelConfig | None, str, str | None, str | None]:
+        """Return (model, backend, preset or None, image override or None)."""
         model = self._get_selected_model()
         backend = self._get_selected_backend()
         preset = self._get_selected_preset()
-        return model, backend, preset
+        artifact = self._get_selected_artifact()
+        return model, backend, preset, artifact
 
 
 # ── Serve Screen ──────────────────────────────────────────────────────────────
@@ -444,7 +478,7 @@ class ServeScreen(Widget):
         from llamactl.core.runtime import find_runtime
         app: LlamaCtlApp = self.app  # type: ignore[assignment]
         form = self.query_one(_LaunchForm)
-        model, backend, preset = form.get_launch_params()
+        model, backend, preset, image_override = form.get_launch_params()
         if model is None:
             self.notify("Select a model first.", severity="warning")
             form.query_one("#btn-launch", Button).disabled = False
@@ -465,7 +499,7 @@ class ServeScreen(Widget):
                     self.notify("No container runtime found (podman/docker).", severity="error")
                     form.query_one("#btn-launch", Button).disabled = False
                     return
-                image = resolve_image(model, backend)
+                image = resolve_image(model, backend, image_override)
                 info = await asyncio.to_thread(
                     launch_container,
                     rt, app._global_cfg, model, settings,
@@ -524,7 +558,7 @@ class ServeScreen(Widget):
         from llamactl.core.config import resolve_settings
         from llamactl.core.mapper import build_server_argv
         form = self.query_one(_LaunchForm)
-        model, backend, preset = form.get_launch_params()
+        model, backend, preset, _image_override = form.get_launch_params()
         if model is None:
             self.notify("Select a model first.", severity="warning")
             return

@@ -267,3 +267,29 @@ async def test_dead_native_server_clears_state(tmp_path: Path, monkeypatch) -> N
         assert serve._server_info is None
         header = serve.query_one(_StatusHeader)
         assert header.state == ServerState.EXITED
+
+
+@pytest.mark.asyncio
+async def test_serve_form_has_artifact_select_from_registry(tmp_path: Path) -> None:
+    from llamactl.ui.app import LlamaCtlApp
+    from textual.widgets import Select
+    from llamactl.core.registry import Artifact, save_registry
+
+    (tmp_path / "configs" / "models").mkdir(parents=True)
+    (tmp_path / "configs" / "llamactl.toml").write_text(
+        'default_backend = "rocm"\ndefault_mode = "container"\nport = 8080\n'
+        'vram_budget_gb = 11.0\nname_prefix = "llamactl"\n'
+    )
+    (tmp_path / "state").mkdir()
+    save_registry(
+        tmp_path / "state" / "registry.toml",
+        [Artifact(target="rocm-image", requested_ref="latest-tag", sha="s1",
+                  build_number="b10", built_at="2026-06-16T00:00:00",
+                  image_tag="llama-cpp-gfx1031:b10")],
+    )
+
+    app = LlamaCtlApp(repo_root=tmp_path)
+    async with app.run_test(headless=True) as pilot:
+        artifact_select = app.query_one("#artifact-select", Select)
+        values = [v for _label, v in artifact_select._options]
+        assert "llama-cpp-gfx1031:b10" in values

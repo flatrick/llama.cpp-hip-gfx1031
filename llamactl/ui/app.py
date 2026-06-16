@@ -33,6 +33,8 @@ class LlamaCtlApp(App):
         self._artifacts: list = []  # registry type TBD, keep as list for now
 
     def on_mount(self) -> None:
+        from llamactl.ui.screens.serve import ServeScreen, _LaunchForm
+
         self._global_cfg = load_global(self._config_dir / "llamactl.toml")
         self._models, self._model_errors = load_all(self._config_dir / "models")
         try:
@@ -42,6 +44,10 @@ class LlamaCtlApp(App):
         except Exception as exc:
             self._artifacts = []
             self.notify(f"Registry load failed: {exc}", severity="warning", timeout=5)
+        try:
+            self.query_one(_LaunchForm).refresh_artifact_options()
+        except Exception:
+            pass
 
     def compose(self) -> ComposeResult:
         yield Header()
