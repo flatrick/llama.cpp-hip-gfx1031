@@ -10,7 +10,7 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Button, Label, ProgressBar, RichLog, Select, Static
 
-from llamactl.core.config import ConfigError, ModelConfig, resolve_settings
+from llamactl.core.config import ModelConfig, resolve_settings
 from llamactl.core.lifecycle import ServerInfo, ServerState, resolve_image
 from llamactl.core.mapper import build_server_argv
 
@@ -27,18 +27,18 @@ class _StatusHeader(Widget):
         padding: 0 1;
         layout: horizontal;
     }
-    _StatusHeader #status-badge {
+    _StatusHeader #state-badge {
         width: auto;
         padding: 0 1;
         margin-right: 1;
     }
-    _StatusHeader #status-badge.stopped  { color: $text-muted; }
-    _StatusHeader #status-badge.starting { color: $warning; }
-    _StatusHeader #status-badge.loading  { color: $warning; }
-    _StatusHeader #status-badge.ready    { color: $success; }
-    _StatusHeader #status-badge.unhealthy { color: $error; }
-    _StatusHeader #status-badge.exited   { color: $text-muted; }
-    _StatusHeader #status-meta {
+    _StatusHeader #state-badge.stopped  { color: $text-muted; }
+    _StatusHeader #state-badge.starting { color: $warning; }
+    _StatusHeader #state-badge.loading  { color: $warning; }
+    _StatusHeader #state-badge.ready    { color: $success; }
+    _StatusHeader #state-badge.unhealthy { color: $error; }
+    _StatusHeader #state-badge.exited   { color: $text-muted; }
+    _StatusHeader #server-meta {
         width: 1fr;
         padding: 0 1;
     }
@@ -48,12 +48,12 @@ class _StatusHeader(Widget):
     info: reactive[ServerInfo | None] = reactive(None)
 
     def compose(self) -> ComposeResult:
-        yield Static("● STOPPED", id="status-badge", classes="stopped")
-        yield Static("No server running", id="status-meta")
+        yield Static("● STOPPED", id="state-badge", classes="stopped")
+        yield Static("No server running", id="server-meta")
 
     def watch_state(self, new_state: ServerState) -> None:
         try:
-            badge = self.query_one("#status-badge", Static)
+            badge = self.query_one("#state-badge", Static)
         except NoMatches:
             return
         badge.update(f"● {new_state.value.upper()}")
@@ -64,7 +64,7 @@ class _StatusHeader(Widget):
 
     def watch_info(self, new_info: ServerInfo | None) -> None:
         try:
-            meta = self.query_one("#status-meta", Static)
+            meta = self.query_one("#server-meta", Static)
         except NoMatches:
             return
         if new_info is None:
