@@ -65,6 +65,9 @@ class ModelsScreen(Widget):
                 yield Input(placeholder="new/dup name", id="new-name")
                 yield Input(placeholder="hf (for New)", id="new-hf")
             with Widget(classes="button-row"):
+                yield Input(placeholder="path/to/legacy.json", id="import-path")
+                yield Button("Import JSON", id="btn-import")
+            with Widget(classes="button-row"):
                 yield Button("Save", id="btn-save", variant="success", disabled=True)
                 yield Button("New", id="btn-new")
                 yield Button("Duplicate", id="btn-dup")
@@ -241,6 +244,12 @@ class ModelsScreen(Widget):
                 if self.is_dirty:
                     self.notify("Discarded unsaved changes.", severity="warning")
                 self.delete_model(self._model_id)
+        elif bid == "btn-import":
+            raw_path = self.query_one("#import-path", Input).value.strip()
+            if raw_path:
+                self.import_json(Path(raw_path).expanduser())
+            else:
+                self.notify("Enter a path to a legacy .json file.", severity="warning")
         elif bid == "btn-resolved":
             if not self.has_class("-resolved"):
                 preset_opts = []
@@ -291,6 +300,26 @@ class ModelsScreen(Widget):
             self._rebuild_tree()
             self._update_dirty(False)
         self._reload_app_models()
+
+    def import_json(self, json_path: Path) -> None:
+        import json as _json
+        from llamactl.core.migrate import convert_model
+        model_id = json_path.stem
+        dest = self._models_dir / f"{model_id}.toml"
+        if dest.exists():
+            self.notify(f"Model '{model_id}' already exists.", severity="warning")
+            return
+        try:
+            raw = _json.loads(json_path.read_text(encoding="utf-8"))
+            doc, warnings = convert_model(raw, model_id)
+        except Exception as exc:
+            self.notify(f"Import failed: {exc}", severity="error")
+            return
+        ce.save_doc(dest, doc)
+        for w in warnings:
+            self.notify(w, severity="warning")
+        self._reload_app_models()
+        self.select_model(model_id)
 
     def render_resolved(self) -> None:
         backend_val = self.query_one("#rv-backend", Select).value

@@ -195,3 +195,25 @@ async def test_create_duplicate_delete_model(tmp_path: Path) -> None:
         await pilot.pause()
         assert not (models_dir / "New-One.toml").exists()
         assert not any(m.id == "New-One" for m in app._models)
+
+
+@pytest.mark.asyncio
+async def test_import_json_creates_toml(tmp_path: Path) -> None:
+    import json
+    from llamactl.ui.app import LlamaCtlApp
+    from llamactl.ui.screens.models import ModelsScreen
+
+    app = LlamaCtlApp(repo_root=_repo(tmp_path))
+    src = tmp_path / "legacy.json"
+    src.write_text(json.dumps({"hf": "org/legacy:f", "name": "Legacy",
+                               "defaults": {"ctx_size": 2048}}))
+    async with app.run_test(headless=True) as pilot:
+        app.query_one("TabbedContent").active = "models"
+        await pilot.pause()
+        ms = app.query_one(ModelsScreen)
+        ms.import_json(src)
+        await pilot.pause()
+        out = tmp_path / "configs" / "models" / "legacy.toml"
+        assert out.exists()
+        assert 'hf = "org/legacy:f"' in out.read_text()
+        assert any(m.id == "legacy" for m in app._models)
