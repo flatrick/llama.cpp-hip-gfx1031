@@ -16,13 +16,16 @@ from llamactl.core.builds import (
     _select_latest_build_tag,
     build_image,
     build_native,
+    delete_artifact,
     detect_native_toolchain,
     export_snapshot,
     image_tag_for,
+    is_in_use,
     resolve_ref,
     run_build,
 )
-from llamactl.core.registry import load_registry
+from llamactl.core.lifecycle import ServerInfo
+from llamactl.core.registry import Artifact, load_registry, save_registry
 
 
 _LS_REMOTE = "\n".join([
@@ -380,3 +383,40 @@ def test_run_build_image_refuses_when_no_runtime(tmp_path, monkeypatch):
             registry_path=reg,
         ))
     assert not reg.exists()
+
+
+def test_delete_image_artifact_runs_rmi_and_drops_row(tmp_path):
+    reg = tmp_path / "registry.toml"
+    art = Artifact(target="rocm-image", requested_ref="latest-tag", sha="s1",
+                   build_number="b10", built_at="2026-06-16T00:00:00",
+                   image_tag="llama-cpp-gfx1031:b10")
+    save_registry(reg, [art])
+    rmi_calls = []
+
+    def runner(cmd):
+        rmi_calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    remaining = delete_artifact(art, tmp_path, reg, runtime="podman", runner=runner)
+    assert remaining == []
+    assert rmi_calls == [["podman", "rmi", "llama-cpp-gfx1031:b10"]]
+    assert load_registry(reg) == []
+
+
+def test_is_in_use_matches_container_image():
+    art = Artifact(target="rocm-image", requested_ref="x", sha="s", build_number="",
+                   built_at="t", image_tag="llama-cpp-gfx1031:b10")
+    info = ServerInfo(model_id="m", backend="rocm", preset="", mode="container",
+                      host="0.0.0.0", port=8080, started_at="",
+                      container_name="llamactl-m")
+
+    def runner(cmd):
+        return subprocess.CompletedProcess(cmd, 0, stdout="llama-cpp-gfx1031:b10\n", stderr="")
+
+    assert is_in_use(art, info, runtime="podman", runner=runner) is True
+
+
+def test_is_in_use_false_when_no_server():
+    art = Artifact(target="rocm-image", requested_ref="x", sha="s", build_number="",
+                   built_at="t", image_tag="t:1")
+    assert is_in_use(art, None) is False

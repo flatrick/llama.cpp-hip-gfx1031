@@ -18,8 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from llamactl.core.lifecycle import DEFAULT_ROCM_IMAGE, DEFAULT_VULKAN_IMAGE
-from llamactl.core.registry import Artifact, add_artifact, load_registry, save_registry
+from llamactl.core.lifecycle import DEFAULT_ROCM_IMAGE, DEFAULT_VULKAN_IMAGE, ServerInfo
+from llamactl.core.registry import Artifact, add_artifact, load_registry, remove_artifact, save_registry
 from llamactl.core.runtime import Runner, _default_runner, find_runtime
 
 _BUILD_TAG_RE = re.compile(r"^b(\d+)$")
@@ -409,3 +409,50 @@ def run_build(
         yield f"✓ Registered {request.target} {resolved.sha[:12]}"
     finally:
         shutil.rmtree(context, ignore_errors=True)
+
+
+def delete_artifact(
+    artifact: Artifact,
+    state_dir: Path,
+    registry_path: Path,
+    runtime: "str | None" = None,
+    runner: Runner = _default_runner,
+) -> list[Artifact]:
+    """Remove the image (podman rmi) or binary dir, then drop the registry row.
+    Tolerates an already-missing image/binary (self-healing)."""
+    if artifact.image_tag:
+        rt = runtime or find_runtime()
+        if rt is not None:
+            runner([rt, "rmi", artifact.image_tag])  # ignore failure; may be gone
+    if artifact.binary_path:
+        shutil.rmtree(state_dir / "builds" / artifact.sha / artifact.target,
+                      ignore_errors=True)
+    remaining = remove_artifact(load_registry(registry_path), artifact.target, artifact.sha)
+    save_registry(registry_path, remaining)
+    return remaining
+
+
+def is_in_use(
+    artifact: Artifact,
+    server: "ServerInfo | None",
+    runtime: "str | None" = None,
+    runner: Runner = _default_runner,
+) -> bool:
+    """Best-effort: container artifact ↔ running container image; native artifact
+    ↔ /proc/<pid>/cmdline argv[0]. False (never raises) when it can't tell."""
+    if server is None:
+        return False
+    if artifact.image_tag and server.mode == "container" and server.container_name:
+        rt = runtime or find_runtime()
+        if rt is None:
+            return False
+        res = runner([rt, "inspect", "--format", "{{.Config.Image}}", server.container_name])
+        return res.returncode == 0 and res.stdout.strip() == artifact.image_tag
+    if artifact.binary_path and server.mode == "native" and server.pid:
+        try:
+            with open(f"/proc/{server.pid}/cmdline", "rb") as f:
+                argv0 = f.read().split(b"\0", 1)[0].decode()
+            return argv0 == artifact.binary_path
+        except OSError:
+            return False
+    return False
