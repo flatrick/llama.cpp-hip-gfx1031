@@ -89,5 +89,5 @@ class NativeInspector:
     def container_pids(self, info) -> list[str]:
         return []
 
-    def api_host_port(self) -> tuple[str, int] | None:
+    def api_host_port(self) -> int | None:
         return None
