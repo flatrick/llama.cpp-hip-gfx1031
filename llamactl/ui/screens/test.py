@@ -3,11 +3,12 @@ from __future__ import annotations
 
 from textual import on
 from textual.app import ComposeResult
+from textual.css.query import NoMatches
 from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Button, DataTable, Label, Static
 
-from llamactl.core.lifecycle import find_running
+from llamactl.core.lifecycle import ServerInfo, find_running
 from llamactl.core.oomtest import OomTestResult, run_oom_check
 
 
@@ -130,7 +131,7 @@ class TestScreen(Widget):
 
     # ── Internal helpers ─────────────────────────────────────────────────────
 
-    def _server(self):
+    def _server(self) -> ServerInfo | None:
         app = self.app
         return find_running(app._global_cfg, app._state_dir)
 
@@ -172,14 +173,16 @@ class TestScreen(Widget):
             return
         self._cancelled = False
         self._running = True
+        # Capture app state on the UI thread; never read self.app from the worker.
+        global_cfg = self.app._global_cfg
         try:
             self.query_one("#test-table", DataTable).clear()
             self.query_one("#verdict", Static).update("[dim]Running…[/dim]")
-        except Exception:
+        except NoMatches:
             pass
         button.label = "Stop"
         self.run_worker(
-            lambda: self._run_worker(server),
+            lambda: self._run_worker(server, global_cfg),
             thread=True,
             exclusive=True,
             group="oom-test",
@@ -187,13 +190,13 @@ class TestScreen(Widget):
 
     # ── Worker (runs on a thread — must only post messages) ──────────────────
 
-    def _run_worker(self, server) -> None:
+    def _run_worker(self, server, global_cfg) -> None:
         reporter = TextualReporter(self)
         try:
             result = run_oom_check(
                 server,
                 reporter,
-                global_cfg=self.app._global_cfg,
+                global_cfg=global_cfg,
                 cancel=lambda: self._cancelled,
             )
         except Exception as exc:
@@ -208,7 +211,7 @@ class TestScreen(Widget):
     def _on_phase_row(self, message: _PhaseRow) -> None:
         try:
             self.query_one("#test-table", DataTable).add_row(*message.cells)
-        except Exception:
+        except NoMatches:
             pass
 
     @on(_Verdict)
@@ -224,10 +227,13 @@ class TestScreen(Widget):
             self.query_one("#verdict", Static).update(
                 f"[{colour} bold]{result.verdict}[/{colour} bold]  {result.detail}"
             )
+        except NoMatches:
+            pass
+        try:
             btn = self.query_one("#btn-run-test", Button)
             btn.label = "Run check"
             btn.disabled = False
-        except Exception:
+        except NoMatches:
             pass
         self._running = False
         self._refresh_precondition()
