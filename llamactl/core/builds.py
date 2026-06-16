@@ -381,8 +381,13 @@ def run_build(
     context = Path(tempfile.mkdtemp(dir=tmp_root))
     try:
         yield "Exporting source snapshot…"
+        # Native builds cmake straight from the context root (`cmake -S <context>`),
+        # so the source goes at the root. Image builds need it under a
+        # `llama.cpp-src/` subdir because Dockerfile.rocm/.vulkan do
+        # `COPY llama.cpp-src /llama.cpp` (the build context is the parent).
+        export_dest = context if is_native else context / "llama.cpp-src"
         export_snapshot(request.ref, resolved, cache_dir, submodule_dir,
-                        context, stream_runner, extractor)
+                        export_dest, stream_runner, extractor)
 
         if is_native:
             out_dir = state_dir / "builds" / resolved.sha / request.target

@@ -59,3 +59,27 @@ async def test_build_streams_lines_and_reenables_button(tmp_path: Path, monkeypa
                 break
             await pilot.pause(0.05)
         assert btn.disabled is False
+
+
+@pytest.mark.asyncio
+async def test_builds_tab_shows_existing_artifacts_on_startup(tmp_path: Path) -> None:
+    """Regression: artifacts from a prior session must appear in the Builds table
+    on startup. The table is built in BuildsScreen.on_mount, which runs before
+    LlamaCtlApp.on_mount loads the registry, so it needs a post-load refresh."""
+    from llamactl.ui.app import LlamaCtlApp
+    from llamactl.core.registry import Artifact, save_registry
+    from textual.widgets import DataTable
+
+    repo = _repo(tmp_path)
+    save_registry(
+        repo / "state" / "registry.toml",
+        [Artifact(target="rocm-image", requested_ref="latest-tag", sha="s1deadbeef",
+                  build_number="b10", built_at="2026-06-16T00:00:00",
+                  image_tag="llama-cpp-gfx1031:b10")],
+    )
+    app = LlamaCtlApp(repo_root=repo)
+    async with app.run_test(headless=True) as pilot:
+        app.query_one("TabbedContent").active = "builds"
+        await pilot.pause()
+        table = app.query_one("#artifact-table", DataTable)
+        assert table.row_count == 1
