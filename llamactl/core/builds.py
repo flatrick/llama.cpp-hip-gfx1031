@@ -170,15 +170,17 @@ def _default_stream_runner(cmd: list[str], cwd: "Path | None" = None) -> Iterato
         text=True, bufsize=1,
     )
     assert proc.stdout is not None
-    for line in proc.stdout:
-        yield line.rstrip("\n")
-    proc.wait()
+    try:
+        for line in proc.stdout:
+            yield line.rstrip("\n")
+    finally:
+        proc.stdout.close()
+        proc.wait()
     if proc.returncode != 0:
         raise BuildError(f"command failed (exit {proc.returncode}): {' '.join(cmd)}")
 
 
 def _default_extractor(archive_cmd: list[str], extract_cmd: list[str], dest: Path) -> None:
-    dest.mkdir(parents=True, exist_ok=True)
     p1 = subprocess.Popen(archive_cmd, stdout=subprocess.PIPE)
     p2 = subprocess.Popen(extract_cmd, stdin=p1.stdout)
     if p1.stdout is not None:
@@ -186,7 +188,10 @@ def _default_extractor(archive_cmd: list[str], extract_cmd: list[str], dest: Pat
     p2.communicate()
     p1.wait()
     if p1.returncode != 0 or p2.returncode != 0:
-        raise BuildError("git archive | tar extraction failed")
+        raise BuildError(
+            f"git archive | tar extraction failed "
+            f"(git={p1.returncode}, tar={p2.returncode})"
+        )
 
 
 def _ensure_cache(cache_dir: Path, stream_runner: StreamRunner) -> None:
