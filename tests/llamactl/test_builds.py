@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from llamactl.core.builds import BuildError, _select_latest_build_tag
+from llamactl.core.builds import BuildError, _select_latest_build_tag, image_tag_for
 
 
 _LS_REMOTE = "\n".join([
@@ -31,3 +31,18 @@ def test_select_latest_build_tag_rejects_decoys_only():
     ])
     with pytest.raises(BuildError, match="no build tag"):
         _select_latest_build_tag(decoys)
+
+
+def test_image_tag_for_rocm_uses_gfx1031_prefix():
+    assert image_tag_for("rocm-image", "latest-tag") == "llama-cpp-gfx1031:latest-tag"
+
+
+def test_image_tag_for_vulkan_uses_vulkan_prefix():
+    assert image_tag_for("vulkan-image", "branch:master") == "llama-cpp-vulkan:branch-master"
+
+
+def test_image_tag_sanitizes_special_chars():
+    # commit:<sha> -> colon becomes dash, sha kept
+    assert image_tag_for("rocm-image", "commit:abc123") == "llama-cpp-gfx1031:commit-abc123"
+    # stray chars dropped
+    assert image_tag_for("rocm-image", "tag:b9!@#") == "llama-cpp-gfx1031:tag-b9"

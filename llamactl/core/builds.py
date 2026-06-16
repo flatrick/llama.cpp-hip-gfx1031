@@ -11,6 +11,23 @@ import re
 
 _BUILD_TAG_RE = re.compile(r"^b(\d+)$")
 
+ROCM_IMAGE_PREFIX = "llama-cpp-gfx1031"      # matches lifecycle.DEFAULT_ROCM_IMAGE
+VULKAN_IMAGE_PREFIX = "llama-cpp-vulkan"     # matches lifecycle.DEFAULT_VULKAN_IMAGE
+
+
+def _sanitize_tag(ref: str) -> str:
+    """Mirror build.llama-ref.docker-rocm.sh sanitize_tag:
+    replace [/:@ ] with '-', drop anything but [A-Za-z0-9._-], then strip
+    any leading/trailing dashes produced by the substitution."""
+    s = re.sub(r"[/:@ ]", "-", ref)
+    s = re.sub(r"[^A-Za-z0-9._-]", "", s)
+    return s.strip("-")
+
+
+def image_tag_for(target: str, ref: str) -> str:
+    prefix = ROCM_IMAGE_PREFIX if target == "rocm-image" else VULKAN_IMAGE_PREFIX
+    return f"{prefix}:{_sanitize_tag(ref)}"
+
 
 class BuildError(Exception):
     """A build step failed (resolution, fetch, snapshot, compile, or registry)."""
