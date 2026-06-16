@@ -9,6 +9,7 @@ from textual.widgets import Footer, Header, Static, TabbedContent, TabPane
 
 from llamactl.core.config import GlobalConfig, ModelConfig, load_all, load_global
 from llamactl.core.registry import load_registry
+from llamactl.ui.screens.builds import BuildsScreen
 from llamactl.ui.screens.serve import ServeScreen
 
 
@@ -50,7 +51,7 @@ class LlamaCtlApp(App):
             with TabPane("Models", id="models"):
                 yield Static("Models editor — coming in Phase 4")
             with TabPane("Builds", id="builds"):
-                yield Static("Build manager — coming in Phase 3")
+                yield BuildsScreen()
             with TabPane("Test", id="test"):
                 yield Static("OOM boundary test — coming in Phase 5")
         yield Footer()
