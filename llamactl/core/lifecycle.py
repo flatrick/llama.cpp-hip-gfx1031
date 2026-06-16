@@ -258,8 +258,10 @@ def stop_server(
     Container mode: container_stop(runtime or find_runtime(), info.container_name, runner)
     Native mode: os.kill(info.pid, signal.SIGTERM); swallow ProcessLookupError
     """
-    if info.mode == "container":
+    if info.mode == "container" and info.container_name:
         rt = runtime or find_runtime()
+        if rt is None:
+            raise RuntimeError("No container runtime (podman/docker) found")
         container_stop(rt, info.container_name, runner)
     else:
         if info.pid is None:

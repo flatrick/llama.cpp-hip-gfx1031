@@ -157,7 +157,7 @@ def test_launch_container_raises_on_nonzero_exit(tmp_path):
 def test_launch_container_vulkan_calls_dri_passthrough(tmp_path):
     captured: list[list[str]] = []
     runner = lambda cmd: (captured.append(cmd), _ok("abc123\n"))[1]
-    fake_dri = lambda **_: (["--device", "/dev/dri/renderD128:/dev/dri/renderD128"], ["--group-add", "44"])
+    fake_dri = lambda: (["--device", "/dev/dri/renderD128:/dev/dri/renderD128"], ["--group-add", "44"])
 
     launch_container(
         runtime="/usr/bin/podman",
