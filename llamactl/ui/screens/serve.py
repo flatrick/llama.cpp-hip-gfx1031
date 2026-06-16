@@ -230,6 +230,7 @@ class _LaunchForm(Widget):
             yield Button("Copy argv", id="btn-copy-argv")
 
         yield Static("(select a model to preview the launch command)", id="argv-preview")
+        yield Static("", id="estimate-line")
 
     def on_select_changed(self, event: Select.Changed) -> None:
         select_id = event.select.id
@@ -325,12 +326,14 @@ class _LaunchForm(Widget):
     def _refresh_argv_preview(self) -> None:
         try:
             preview = self.query_one("#argv-preview", Static)
+            est_line = self.query_one("#estimate-line", Static)
         except NoMatches:
             return
 
         model = self._get_selected_model()
         if model is None:
             preview.update("(select a model to preview the launch command)")
+            est_line.update("")
             return
 
         backend = self._get_selected_backend()
@@ -344,8 +347,25 @@ class _LaunchForm(Widget):
             argv = build_server_argv(model.hf, settings, "0.0.0.0", port)
             argv_str = " ".join(argv)
             preview.update(f"[bold]Image:[/bold] {image}\n[bold]argv:[/bold] {argv_str}")
+            est_line.update(self._format_estimate(model, settings, app._global_cfg))
         except Exception as exc:
             preview.update(f"[red]Config error: {exc}[/red]")
+            est_line.update("")
+
+    @staticmethod
+    def _format_estimate(model, settings, global_cfg) -> str:
+        from llamactl.core.estimate import estimate_vram
+        est = estimate_vram(model, settings, global_cfg)
+        if est is None:
+            return "[dim]Est: unavailable — model not downloaded[/dim]"
+        budget = global_cfg.vram_budget_gb
+        mark = "✓" if est.total_gb <= budget else "⚠"
+        body = (
+            f"Est: {est.total_gb:.1f} GB  "
+            f"(model {est.model_gb:.1f} + KV {est.kv_gb:.1f} + buf {est.compute_gb:.1f})  "
+            f"— budget {budget:.0f} GB {mark}"
+        )
+        return body if est.total_gb <= budget else f"[red]{body}[/red]"
 
     def get_launch_params(
         self,
