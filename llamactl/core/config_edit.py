@@ -55,3 +55,36 @@ def save_doc(path: Path, doc: TOMLDocument) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(tomlkit.dumps(doc), encoding="utf-8")
     tmp.replace(path)
+
+
+def _section_table(doc: TOMLDocument, section: str, create: bool):
+    """Return the table for `section` ("" = doc root). create=True makes any
+    missing intermediate tables; create=False returns None if absent."""
+    if section == "":
+        return doc
+    node: Any = doc
+    for part in section.split("."):
+        if part not in node:
+            if not create:
+                return None
+            node[part] = tomlkit.table()
+        node = node[part]
+    return node
+
+
+def ensure_section(doc: TOMLDocument, section: str) -> None:
+    """Create an empty table for `section` (e.g. 'presets.thinking') if absent."""
+    _section_table(doc, section, create=True)
+
+
+def set_value(doc: TOMLDocument, section: str, key: str, raw: str) -> None:
+    """Set section.key = parse_value(raw), creating the section if needed."""
+    table = _section_table(doc, section, create=True)
+    table[key] = parse_value(raw)
+
+
+def delete_key(doc: TOMLDocument, section: str, key: str) -> None:
+    """Remove section.key if both exist; a no-op otherwise."""
+    table = _section_table(doc, section, create=False)
+    if table is not None and key in table:
+        del table[key]

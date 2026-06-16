@@ -4,7 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from llamactl.core.config_edit import is_valid_key, load_doc, parse_value, save_doc, value_to_literal
+import tomlkit
+
+from llamactl.core.config_edit import delete_key, ensure_section, is_valid_key, load_doc, parse_value, save_doc, set_value, value_to_literal
 
 
 def test_parse_value_types():
@@ -65,3 +67,47 @@ def load_doc_from_text(text: str, tmp_path) -> object:
     p = tmp_path / "seed.toml"
     p.write_text(text, encoding="utf-8")
     return load_doc(p)
+
+
+def _doc(text: str):
+    return tomlkit.parse(text)
+
+
+def test_set_value_updates_existing_and_preserves_comment():
+    doc = _doc('name = "M"\nhf = "x"\n\n[settings]\n# keep me\nctx_size = 4096\n')
+    set_value(doc, "settings", "ctx_size", "8192")
+    text = tomlkit.dumps(doc)
+    assert "# keep me" in text
+    assert doc["settings"]["ctx_size"] == 8192
+    assert isinstance(doc["settings"]["ctx_size"], int)
+
+
+def test_set_value_creates_nested_section():
+    doc = _doc('hf = "x"\n')
+    set_value(doc, "backends.rocm", "cache_type_k", "q8_0")
+    assert doc["backends"]["rocm"]["cache_type_k"] == "q8_0"
+
+
+def test_set_value_top_level():
+    doc = _doc('hf = "x"\n')
+    set_value(doc, "", "name", '"New Name"')
+    assert doc["name"] == "New Name"
+
+
+def test_set_value_bool_stays_bare_flag():
+    doc = _doc('hf = "x"\n[settings]\n')
+    set_value(doc, "settings", "jinja", "true")
+    assert doc["settings"]["jinja"] is True
+
+
+def test_delete_key_removes_only_that_key():
+    doc = _doc('hf = "x"\n[settings]\na = 1\nb = 2\n')
+    delete_key(doc, "settings", "a")
+    assert "a" not in doc["settings"]
+    assert doc["settings"]["b"] == 2
+
+
+def test_ensure_section_creates_empty_preset_table():
+    doc = _doc('hf = "x"\n')
+    ensure_section(doc, "presets.thinking")
+    assert "thinking" in doc["presets"]
