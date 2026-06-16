@@ -54,6 +54,8 @@ class BuildsScreen(Widget):
             server = find_running(app._global_cfg, app._state_dir)
         except Exception:
             server = None
+        # is_in_use may shell out (podman inspect) per artifact; acceptable for the
+        # small single-user registry. Revisit with a thread worker if it grows large.
         for art in app._artifacts:
             used = "●" if is_in_use(art, server) else ""
             table.add_row(art.requested_ref, art.sha[:12], art.build_number or "—",
@@ -64,16 +66,16 @@ class BuildsScreen(Widget):
             event.button.disabled = True
             ref = self.query_one("#ref-input", Input).value.strip()
             target = str(self.query_one("#target-select", Select).value)
+            log = self.query_one("#build-log", RichLog)
             self.run_worker(
-                lambda: self._build_thread(ref, target),
+                lambda: self._build_thread(ref, target, log),
                 thread=True, exclusive=True, group="build",
             )
         elif event.button.id == "btn-delete":
             self._delete_selected()
 
-    def _build_thread(self, ref: str, target: str) -> None:
+    def _build_thread(self, ref: str, target: str, log: RichLog) -> None:
         app: LlamaCtlApp = self.app  # type: ignore[assignment]
-        log = self.query_one("#build-log", RichLog)
         try:
             req = BuildRequest(ref=ref, target=target)
             for line in run_build(
@@ -91,15 +93,15 @@ class BuildsScreen(Widget):
         app: LlamaCtlApp = self.app  # type: ignore[assignment]
         try:
             app._artifacts = load_registry(app._state_dir / "registry.toml")
-        except Exception:
-            pass
+        except Exception as exc:
+            self.notify(f"Registry reload failed: {exc}", severity="warning")
         self.query_one("#btn-build", Button).disabled = False
         self._refresh_table()
 
     def _delete_selected(self) -> None:
         app: LlamaCtlApp = self.app  # type: ignore[assignment]
         table = self.query_one("#artifact-table", DataTable)
-        if table.cursor_row is None or not app._artifacts:
+        if not app._artifacts:
             self.notify("Select an artifact row first.", severity="warning")
             return
         try:
@@ -112,6 +114,15 @@ class BuildsScreen(Widget):
                       if a.target == target and a.sha == sha), None)
         if match is None:
             return
-        app._artifacts = delete_artifact(match, app._state_dir,
-                                         app._state_dir / "registry.toml")
-        self._refresh_table()
+        self.run_worker(lambda: self._delete_thread(match), thread=True, group="delete")
+
+    def _delete_thread(self, artifact) -> None:
+        app: LlamaCtlApp = self.app  # type: ignore[assignment]
+        remaining = delete_artifact(artifact, app._state_dir,
+                                    app._state_dir / "registry.toml")
+
+        def _done() -> None:
+            app._artifacts = remaining
+            self._refresh_table()
+
+        app.call_from_thread(_done)
