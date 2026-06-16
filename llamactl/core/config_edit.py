@@ -75,6 +75,10 @@ def _section_table(doc: TOMLDocument, section: str, create: bool) -> Any:
                 return None
             node[part] = tomlkit.table()
         node = node[part]
+    if not isinstance(node, dict):
+        if not create:
+            return None
+        raise ValueError(f"section {section!r} is occupied by a non-table value")
     return node
 
 
@@ -89,11 +93,13 @@ def set_value(doc: TOMLDocument, section: str, key: str, raw: str) -> None:
     table[key] = parse_value(raw)
 
 
-def delete_key(doc: TOMLDocument, section: str, key: str) -> None:
-    """Remove section.key if both exist; a no-op otherwise."""
+def delete_key(doc: TOMLDocument, section: str, key: str) -> bool:
+    """Remove section.key; return True if a key was deleted, False if absent."""
     table = _section_table(doc, section, create=False)
     if table is not None and key in table:
         del table[key]
+        return True
+    return False
 
 
 def new_model_doc(name: str, hf: str) -> TOMLDocument:

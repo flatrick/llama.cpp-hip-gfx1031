@@ -106,8 +106,14 @@ class ModelsScreen(Widget):
         return str(value)
 
     def _section_options(self) -> list[tuple[str, str]]:
-        opts = [("(top-level)", ""), ("settings", "settings"),
-                ("backends.rocm", "backends.rocm"), ("backends.vulkan", "backends.vulkan")]
+        opts = [("(top-level)", ""), ("settings", "settings")]
+        backends = ["rocm", "vulkan"]
+        if self._doc is not None and "backends" in self._doc:
+            for bk in self._doc["backends"]:
+                if bk not in backends:
+                    backends.append(bk)
+        for bk in backends:
+            opts.append((f"backends.{bk}", f"backends.{bk}"))
         if self._doc is not None and "presets" in self._doc:
             for pk in self._doc["presets"]:
                 opts.append((f"presets.{pk}", f"presets.{pk}"))
@@ -117,6 +123,7 @@ class ModelsScreen(Widget):
         tree = self.query_one("#editor-tree", Tree)
         tree.clear()
         if self._doc is None:
+            self.query_one("#section-select", Select).set_options([])
             return
         root = tree.root
         root.expand()
@@ -164,9 +171,11 @@ class ModelsScreen(Widget):
     def apply_delete(self, section: str, key: str) -> None:
         if self._doc is None:
             return
-        ce.delete_key(self._doc, section, key)
-        self._rebuild_tree()
-        self._update_dirty(True)
+        if ce.delete_key(self._doc, section, key):
+            self._rebuild_tree()
+            self._update_dirty(True)
+        else:
+            self.notify(f"No key {key!r} in {section or '(top-level)'}.", severity="warning")
 
     def action_save(self) -> None:
         if self._doc is None or self._model_id is None:
@@ -320,7 +329,11 @@ class ModelsScreen(Widget):
         except Exception as exc:
             self.notify(f"Import failed: {exc}", severity="error")
             return
-        ce.save_doc(dest, doc)
+        try:
+            ce.save_doc(dest, doc)
+        except Exception as exc:
+            self.notify(f"Save failed: {exc}", severity="error")
+            return
         for w in warnings:
             self.notify(w, severity="warning")
         self._reload_app_models()

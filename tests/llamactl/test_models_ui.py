@@ -236,3 +236,51 @@ async def test_new_model_appears_in_serve_picker(tmp_path: Path) -> None:
         form = app.query_one(_LaunchForm)
         values = [v for _label, v in form.query_one("#model-select", Select)._options]
         assert "Fresh-Model" in values
+
+
+@pytest.mark.asyncio
+async def test_custom_backend_appears_in_section_options(tmp_path: Path) -> None:
+    from llamactl.ui.app import LlamaCtlApp
+    from llamactl.ui.screens.models import ModelsScreen
+
+    (tmp_path / "configs" / "models").mkdir(parents=True)
+    (tmp_path / "configs" / "llamactl.toml").write_text(
+        'default_backend = "rocm"\ndefault_mode = "container"\nport = 8080\n'
+        'vram_budget_gb = 11.0\nname_prefix = "llamactl"\n'
+    )
+    (tmp_path / "configs" / "models" / "m.toml").write_text(
+        'name = "M"\nhf = "org/m:f"\n\n[settings]\nctx_size = 4096\n\n[backends.cpu]\nx = 1\n'
+    )
+    (tmp_path / "state").mkdir()
+    app = LlamaCtlApp(repo_root=tmp_path)
+    async with app.run_test(headless=True) as pilot:
+        app.query_one("TabbedContent").active = "models"
+        await pilot.pause()
+        ms = app.query_one(ModelsScreen)
+        ms.select_model("m")
+        await pilot.pause()
+        values = [v for _label, v in ms._section_options()]
+        assert "backends.cpu" in values
+        assert "backends.rocm" in values   # still offered even though absent from file
+
+
+@pytest.mark.asyncio
+async def test_section_select_cleared_after_delete_model(tmp_path: Path) -> None:
+    from llamactl.ui.app import LlamaCtlApp
+    from llamactl.ui.screens.models import ModelsScreen
+    from textual.widgets import Select
+
+    app = LlamaCtlApp(repo_root=_repo(tmp_path))
+    async with app.run_test(headless=True) as pilot:
+        app.query_one("TabbedContent").active = "models"
+        await pilot.pause()
+        ms = app.query_one(ModelsScreen)
+        ms.select_model("m")
+        await pilot.pause()
+        ms.delete_model("m")
+        await pilot.pause()
+        sel = ms.query_one("#section-select", Select)
+        # allow_blank=True means set_options([]) leaves only the blank NULL entry;
+        # no real (non-NULL) options should remain.
+        real_values = [v for _, v in sel._options if v is not Select.NULL]
+        assert real_values == []

@@ -146,3 +146,16 @@ def test_model_id_from_name_slug():
     assert model_id_from_name("Qwen3 8B Instruct") == "Qwen3-8B-Instruct"
     assert model_id_from_name("a/b:c") == "a-b-c"
     assert model_id_from_name("  ") == "model"
+
+
+def test_section_table_terminal_scalar_returns_none():
+    doc = _doc('backends = 42\n')   # single-segment section occupied by a scalar
+    from llamactl.core.config_edit import _section_table
+    assert _section_table(doc, "backends", create=False) is None
+
+
+def test_delete_key_returns_bool():
+    doc = _doc('hf = "x"\n[settings]\na = 1\n')
+    assert delete_key(doc, "settings", "a") is True
+    assert delete_key(doc, "settings", "a") is False        # already gone
+    assert delete_key(doc, "backends", "missing") is False  # absent section
