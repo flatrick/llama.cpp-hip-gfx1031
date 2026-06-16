@@ -42,7 +42,7 @@ class BuildsScreen(Widget):
 
     def on_mount(self) -> None:
         table = self.query_one("#artifact-table", DataTable)
-        table.add_columns("ref", "sha", "build", "target", "in-use")
+        table.add_columns("ref", "sha", "build", "date", "target", "in-use")
         self._refresh_table()
 
     def _refresh_table(self) -> None:
@@ -59,11 +59,13 @@ class BuildsScreen(Widget):
         for art in app._artifacts:
             used = "●" if is_in_use(art, server) else ""
             table.add_row(art.requested_ref, art.sha[:12], art.build_number or "—",
-                          art.target, used, key=f"{art.target}:{art.sha}")
+                          (art.built_at or "")[:10], art.target, used,
+                          key=f"{art.target}:{art.sha}")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-build":
             event.button.disabled = True
+            self.query_one("#btn-delete", Button).disabled = True
             ref = self.query_one("#ref-input", Input).value.strip()
             target = str(self.query_one("#target-select", Select).value)
             log = self.query_one("#build-log", RichLog)
@@ -88,6 +90,14 @@ class BuildsScreen(Widget):
         finally:
             app.call_from_thread(self._on_build_done)
 
+    def _refresh_serve_picker(self) -> None:
+        """Push the updated registry into the Serve tab's artifact picker."""
+        from llamactl.ui.screens.serve import _LaunchForm
+        try:
+            self.app.query_one(_LaunchForm).refresh_artifact_options()
+        except Exception:
+            pass
+
     def _on_build_done(self) -> None:
         from llamactl.core.registry import load_registry
         app: LlamaCtlApp = self.app  # type: ignore[assignment]
@@ -96,7 +106,9 @@ class BuildsScreen(Widget):
         except Exception as exc:
             self.notify(f"Registry reload failed: {exc}", severity="warning")
         self.query_one("#btn-build", Button).disabled = False
+        self.query_one("#btn-delete", Button).disabled = False
         self._refresh_table()
+        self._refresh_serve_picker()
 
     def _delete_selected(self) -> None:
         app: LlamaCtlApp = self.app  # type: ignore[assignment]
@@ -124,5 +136,6 @@ class BuildsScreen(Widget):
         def _done() -> None:
             app._artifacts = remaining
             self._refresh_table()
+            self._refresh_serve_picker()
 
         app.call_from_thread(_done)

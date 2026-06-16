@@ -233,7 +233,7 @@ class _LaunchForm(Widget):
 
     def on_select_changed(self, event: Select.Changed) -> None:
         select_id = event.select.id
-        if select_id in ("model-select", "backend-select", "preset-select"):
+        if select_id in ("model-select", "backend-select", "preset-select", "artifact-select"):
             if select_id == "model-select":
                 self._refresh_preset_options()
             self._refresh_argv_preview()
@@ -322,7 +322,7 @@ class _LaunchForm(Widget):
             app: LlamaCtlApp = self.app  # type: ignore[assignment]
             port = app._global_cfg.port
             settings = resolve_settings(model, preset, backend, {})
-            image = resolve_image(model, backend)
+            image = resolve_image(model, backend, self._get_selected_artifact())
             argv = build_server_argv(model.hf, settings, "0.0.0.0", port)
             argv_str = " ".join(argv)
             preview.update(f"[bold]Image:[/bold] {image}\n[bold]argv:[/bold] {argv_str}")

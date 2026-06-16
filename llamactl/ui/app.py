@@ -8,7 +8,7 @@ from textual.binding import Binding
 from textual.widgets import Footer, Header, Static, TabbedContent, TabPane
 
 from llamactl.core.config import GlobalConfig, ModelConfig, load_all, load_global
-from llamactl.core.registry import load_registry
+from llamactl.core.registry import Artifact, load_registry
 from llamactl.ui.screens.builds import BuildsScreen
 from llamactl.ui.screens.serve import ServeScreen
 
@@ -30,7 +30,7 @@ class LlamaCtlApp(App):
         self._global_cfg: GlobalConfig = GlobalConfig()
         self._models: list[ModelConfig] = []
         self._model_errors: dict[Path, str] = {}
-        self._artifacts: list = []  # registry type TBD, keep as list for now
+        self._artifacts: list[Artifact] = []
 
     def on_mount(self) -> None:
         from llamactl.ui.screens.serve import ServeScreen, _LaunchForm

@@ -30,7 +30,7 @@ async def test_builds_tab_has_form_and_table(tmp_path: Path) -> None:
         assert app.query_one("#build-log", RichLog) is not None
         assert app.query_one("#artifact-table", DataTable) is not None
         table = app.query_one("#artifact-table", DataTable)
-        assert len(table.columns) == 5
+        assert len(table.columns) == 6
 
 
 @pytest.mark.asyncio
