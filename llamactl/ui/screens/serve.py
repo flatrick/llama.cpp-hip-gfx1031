@@ -244,7 +244,7 @@ class _LaunchForm(Widget):
         except NoMatches:
             return None
         value = model_select.value
-        if value is Select.BLANK or value is None:
+        if value is Select.NULL or value is None:
             return None
         return self._model_map.get(str(value))
 
@@ -252,7 +252,7 @@ class _LaunchForm(Widget):
         try:
             backend_select = self.query_one("#backend-select", Select)
             value = backend_select.value
-            if value is Select.BLANK or value is None:
+            if value is Select.NULL or value is None:
                 return "rocm"
             return str(value)
         except NoMatches:
@@ -262,7 +262,7 @@ class _LaunchForm(Widget):
         try:
             preset_select = self.query_one("#preset-select", Select)
             value = preset_select.value
-            if value is Select.BLANK or value is None:
+            if value is Select.NULL or value is None:
                 return None
             return str(value)
         except NoMatches:
@@ -288,7 +288,7 @@ class _LaunchForm(Widget):
         except NoMatches:
             return None
         value = sel.value
-        if value is Select.BLANK or value is None:
+        if value is Select.NULL or value is None:
             return None
         return str(value)
 
