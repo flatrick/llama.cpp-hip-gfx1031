@@ -46,3 +46,13 @@ def test_image_tag_sanitizes_special_chars():
     assert image_tag_for("rocm-image", "commit:abc123") == "llama-cpp-gfx1031:commit-abc123"
     # stray chars dropped
     assert image_tag_for("rocm-image", "tag:b9!@#") == "llama-cpp-gfx1031:tag-b9"
+
+
+def test_image_tag_for_rejects_unknown_target():
+    with pytest.raises(BuildError, match="image target"):
+        image_tag_for("rocm-native", "b1000")
+
+
+def test_image_tag_for_rejects_empty_sanitized_ref():
+    with pytest.raises(BuildError, match="empty image tag"):
+        image_tag_for("rocm-image", "@")

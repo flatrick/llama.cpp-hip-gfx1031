@@ -9,24 +9,37 @@ from __future__ import annotations
 
 import re
 
+from llamactl.core.lifecycle import DEFAULT_ROCM_IMAGE, DEFAULT_VULKAN_IMAGE
+
 _BUILD_TAG_RE = re.compile(r"^b(\d+)$")
 
-ROCM_IMAGE_PREFIX = "llama-cpp-gfx1031"      # matches lifecycle.DEFAULT_ROCM_IMAGE
-VULKAN_IMAGE_PREFIX = "llama-cpp-vulkan"     # matches lifecycle.DEFAULT_VULKAN_IMAGE
+ROCM_IMAGE_PREFIX = DEFAULT_ROCM_IMAGE.split(":")[0]      # "llama-cpp-gfx1031"
+VULKAN_IMAGE_PREFIX = DEFAULT_VULKAN_IMAGE.split(":")[0]  # "llama-cpp-vulkan"
+_IMAGE_PREFIXES = {"rocm-image": ROCM_IMAGE_PREFIX, "vulkan-image": VULKAN_IMAGE_PREFIX}
 
 
 def _sanitize_tag(ref: str) -> str:
     """Mirror build.llama-ref.docker-rocm.sh sanitize_tag:
     replace [/:@ ] with '-', drop anything but [A-Za-z0-9._-], then strip
-    any leading/trailing dashes produced by the substitution."""
+    any leading/trailing dashes produced by the substitution.
+
+    The two passes are order-dependent: separator→dash MUST run before dropping
+    disallowed chars so that '/' becomes '-' rather than being silently removed.
+    Output is ASCII-only, satisfying Docker's tag character requirements."""
     s = re.sub(r"[/:@ ]", "-", ref)
     s = re.sub(r"[^A-Za-z0-9._-]", "", s)
     return s.strip("-")
 
 
 def image_tag_for(target: str, ref: str) -> str:
-    prefix = ROCM_IMAGE_PREFIX if target == "rocm-image" else VULKAN_IMAGE_PREFIX
-    return f"{prefix}:{_sanitize_tag(ref)}"
+    try:
+        prefix = _IMAGE_PREFIXES[target]
+    except KeyError:
+        raise BuildError(f"not an image target: {target!r}") from None
+    tag = _sanitize_tag(ref)
+    if not tag:
+        raise BuildError(f"ref {ref!r} sanitizes to an empty image tag")
+    return f"{prefix}:{tag}"
 
 
 class BuildError(Exception):
