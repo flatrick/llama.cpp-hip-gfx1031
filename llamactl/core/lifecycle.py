@@ -79,8 +79,8 @@ def _default_spawner(cmd: list[str], env_extra: dict[str, str], log_path: Path) 
 def _is_pid_alive(pid: int) -> bool:
     """Read /proc/{pid}/cmdline; return True if 'llama-server' in content. Return False on OSError."""
     try:
-        content = Path(f"/proc/{pid}/cmdline").read_text()
-        return "llama-server" in content
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return b"llama-server" in f.read()
     except OSError:
         return False
 
@@ -303,8 +303,8 @@ def find_running(
     pidfile = state_dir / "native-server.json"
     if pidfile.exists():
         try:
-            meta = json.loads(pidfile.read_text())
-            pid = meta["pid"]
+            meta = json.loads(pidfile.read_text(encoding="utf-8"))
+            pid = int(meta["pid"])
             if _is_pid_alive(pid):
                 return ServerInfo(
                     model_id=meta["model_id"],
