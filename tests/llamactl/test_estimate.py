@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from llamactl.core.config import GlobalConfig
-from llamactl.core.estimate import Estimate, compute_estimate, resolve_gguf_path
+from llamactl.core.config import GlobalConfig, ModelConfig
+from llamactl.core.estimate import Estimate, compute_estimate, estimate_vram, resolve_gguf_path
 
 
 def test_compute_estimate_breakdown():
@@ -99,3 +99,49 @@ def test_resolve_handles_hf_hub_subdir_layout(tmp_path):
     target.write_bytes(b"GGUF")
     got = resolve_gguf_path("unsloth/Qwen3.5-9B-GGUF:UD-Q5_K_XL", cfg)
     assert got == target
+
+
+def _model(hf: str) -> ModelConfig:
+    return ModelConfig(
+        id="m", name="m", hf=hf, settings={}, backends={}, presets={}, images={},
+        path=Path("x.toml"),
+    )
+
+
+def test_estimate_vram_returns_none_when_gguf_absent(tmp_path):
+    cfg = _global_cfg(tmp_path)
+    cfg.llama_cache.mkdir(parents=True)
+    model = _model("unsloth/Qwen3.5-9B-GGUF:UD-Q5_K_XL")
+    assert estimate_vram(model, {"ctx_size": 4096}, cfg) is None
+
+
+def test_estimate_vram_uses_resolved_settings(tmp_path, monkeypatch):
+    cfg = _global_cfg(tmp_path)
+    cfg.llama_cache.mkdir(parents=True)
+    gguf = cfg.llama_cache / "unsloth_Qwen3.5-9B-GGUF_x-UD-Q5_K_XL.gguf"
+    gguf.write_bytes(b"GGUF")
+
+    fake_params = {"kv_layers": 4, "kv_heads": 2, "head_dim": 64, "weight_gb": 3.0}
+    monkeypatch.setattr(
+        "llamactl.core.estimate.model_params_from_gguf",
+        lambda path: fake_params,
+    )
+    model = _model("unsloth/Qwen3.5-9B-GGUF:UD-Q5_K_XL")
+    settings = {"ctx_size": 2048, "cache_type_k": "q8_0",
+                "cache_type_v": "q8_0", "batch_size": 1024}
+    est = estimate_vram(model, settings, cfg)
+    assert est is not None
+    assert est.model_gb == 3.0
+    assert abs(est.compute_gb - 0.9 * (1024 / 512)) < 1e-9
+
+
+def test_estimate_vram_returns_none_on_unreadable_gguf(tmp_path, monkeypatch):
+    cfg = _global_cfg(tmp_path)
+    cfg.llama_cache.mkdir(parents=True)
+    (cfg.llama_cache / "unsloth_Qwen3.5-9B-GGUF_x-UD-Q5_K_XL.gguf").write_bytes(b"GGUF")
+    monkeypatch.setattr(
+        "llamactl.core.estimate.model_params_from_gguf",
+        lambda path: (_ for _ in ()).throw(ValueError("bad header")),
+    )
+    model = _model("unsloth/Qwen3.5-9B-GGUF:UD-Q5_K_XL")
+    assert estimate_vram(model, {"ctx_size": 2048}, cfg) is None
