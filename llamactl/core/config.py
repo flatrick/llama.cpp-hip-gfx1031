@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,6 +74,10 @@ def load_model(path: Path) -> ModelConfig:
             data = tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ConfigError(f"{path}: {exc}") from exc
+    return _build_model_config(data, path)
+
+
+def _build_model_config(data: dict[str, Any], path: Path) -> ModelConfig:
     if "hf" not in data:
         raise ConfigError(f"{path}: missing required key 'hf'")
     hf = _require_str(path, "hf", data["hf"])
@@ -133,7 +138,7 @@ def resolve_settings(
         settings.update(model.presets[preset])
     settings.update(model.backends.get(backend, {}))
     settings.update({k: v for k, v in overrides.items() if v is not None})
-    return settings
+    return copy.deepcopy(settings)
 
 
 def load_global(path: Path) -> GlobalConfig:

@@ -282,6 +282,24 @@ class _LaunchForm(Widget):
         ]
         sel.set_options(artifact_options)
 
+    def refresh_model_options(self) -> None:
+        """Repopulate the model select from app._models (after a Models-tab save),
+        preserving the current selection when that model still exists."""
+        app = self.app
+        self._models = getattr(app, "_models", [])
+        self._model_map = {m.id: m for m in self._models}
+        try:
+            sel = self.query_one("#model-select", Select)
+        except NoMatches:
+            return
+        prev = sel.value
+        sel.set_options([(m.name, m.id) for m in self._models])
+        if prev in self._model_map:          # NULL/None are never keys, so this is safe
+            sel.value = prev
+        # The selected model may have gained/lost/renamed presets; rebuild that picker.
+        self._refresh_preset_options()
+        self._refresh_argv_preview()
+
     def _get_selected_artifact(self) -> str | None:
         try:
             sel = self.query_one("#artifact-select", Select)

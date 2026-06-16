@@ -8,6 +8,7 @@ from llamactl.core.config import (
     ConfigError,
     GlobalConfig,
     ModelConfig,
+    _build_model_config,
     load_all,
     load_global,
     load_model,
@@ -217,3 +218,25 @@ def test_checked_in_global_config_equals_defaults() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     cfg = load_global(repo_root / "configs" / "llamactl.toml")
     assert cfg == GlobalConfig()
+
+
+def test_build_model_config_from_plain_dict(tmp_path):
+    data = {"hf": "org/m:f", "name": "M", "settings": {"ctx_size": 4096}}
+    mc = _build_model_config(data, tmp_path / "m.toml")
+    assert isinstance(mc, ModelConfig)
+    assert mc.id == "m"
+    assert mc.hf == "org/m:f"
+    assert mc.settings == {"ctx_size": 4096}
+
+
+def test_resolve_settings_returns_deep_copy():
+    mc = ModelConfig(
+        id="m", name="M", hf="org/m:f",
+        settings={"stop": ["</s>"], "ctx_size": 4096},
+        backends={}, presets={}, images={}, path=__import__("pathlib").Path("/x/m.toml"),
+    )
+    resolved = resolve_settings(mc, None, "rocm", {})
+    resolved["stop"].append("INJECTED")
+    resolved["ctx_size"] = 999
+    assert mc.settings["stop"] == ["</s>"]
+    assert mc.settings["ctx_size"] == 4096
