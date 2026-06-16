@@ -8,6 +8,7 @@ from llamactl.core.config import (
     ConfigError,
     GlobalConfig,
     ModelConfig,
+    _build_model_config,
     load_all,
     load_global,
     load_model,
@@ -217,11 +218,6 @@ def test_checked_in_global_config_equals_defaults() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     cfg = load_global(repo_root / "configs" / "llamactl.toml")
     assert cfg == GlobalConfig()
-
-
-import copy as _copy
-
-from llamactl.core.config import _build_model_config
 
 
 def test_build_model_config_from_plain_dict(tmp_path):
