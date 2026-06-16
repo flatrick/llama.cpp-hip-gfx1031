@@ -220,14 +220,26 @@ class ModelsScreen(Widget):
         elif bid == "btn-new":
             name = self.query_one("#new-name", Input).value.strip()
             hf = self.query_one("#new-hf", Input).value.strip()
-            if name and hf:
+            if not (name and hf):
+                self.notify("New model needs both a name and an hf repo.", severity="warning")
+            else:
+                if self.is_dirty:
+                    self.notify("Discarded unsaved changes.", severity="warning")
                 self.create_model(name, hf)
         elif bid == "btn-dup":
             name = self.query_one("#new-name", Input).value.strip()
-            if name:
+            if not name:
+                self.notify("Duplicate needs a new name.", severity="warning")
+            else:
+                if self.is_dirty:
+                    self.notify("Discarded unsaved changes.", severity="warning")
                 self.duplicate_model(name)
         elif bid == "btn-del-model":
-            if self._model_id:
+            if not self._model_id:
+                self.notify("Select a model to delete first.", severity="warning")
+            else:
+                if self.is_dirty:
+                    self.notify("Discarded unsaved changes.", severity="warning")
                 self.delete_model(self._model_id)
         elif bid == "btn-resolved":
             if not self.has_class("-resolved"):
@@ -246,7 +258,7 @@ class ModelsScreen(Widget):
         model_id = ce.model_id_from_name(name)
         path = self._models_dir / f"{model_id}.toml"
         if path.exists():
-            self.notify(f"Model '{model_id}' already exists.", severity="warning")
+            self.notify(f"Model id '{model_id}' already exists (from name '{name}').", severity="warning")
             return
         ce.save_doc(path, ce.new_model_doc(name, hf))
         self._reload_app_models()
@@ -259,7 +271,7 @@ class ModelsScreen(Widget):
         model_id = ce.model_id_from_name(new_name)
         path = self._models_dir / f"{model_id}.toml"
         if path.exists():
-            self.notify(f"Model '{model_id}' already exists.", severity="warning")
+            self.notify(f"Model id '{model_id}' already exists (from name '{new_name}').", severity="warning")
             return
         dup = ce.duplicate_doc(self._doc)
         dup["name"] = new_name
