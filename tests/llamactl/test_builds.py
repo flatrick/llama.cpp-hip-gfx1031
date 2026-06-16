@@ -365,3 +365,18 @@ def test_run_build_native_refuses_when_toolchain_missing(tmp_path, monkeypatch):
             repo_root=tmp_path, state_dir=tmp_path, submodule_dir=tmp_path / "sub",
             registry_path=tmp_path / "registry.toml",
         ))
+
+
+def test_run_build_image_refuses_when_no_runtime(tmp_path, monkeypatch):
+    import llamactl.core.builds as b
+    monkeypatch.setattr(b, "resolve_ref",
+                        lambda *a, **k: ResolvedRef("sha123456789", "b10", "refs/tags/b10", "x"))
+    monkeypatch.setattr(b, "find_runtime", lambda: None)
+    reg = tmp_path / "registry.toml"
+    with pytest.raises(BuildError, match="container runtime"):
+        list(run_build(
+            BuildRequest("latest-tag", "rocm-image"),
+            repo_root=tmp_path, state_dir=tmp_path, submodule_dir=tmp_path / "sub",
+            registry_path=reg,
+        ))
+    assert not reg.exists()

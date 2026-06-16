@@ -363,6 +363,7 @@ def run_build(
     resolved = resolve_ref(request.ref, cache_dir, submodule_dir, runner)
     yield f"Resolved {resolved.sha[:12]} (build {resolved.build_number or 'unknown'})"
 
+    rt: "str | None" = None
     if is_native:
         status = detect_native_toolchain(request.target)
         if not status.ok:
@@ -370,6 +371,10 @@ def run_build(
                 f"native toolchain incomplete: missing {', '.join(status.missing)}. "
                 f"Use a container target instead."
             )
+    else:
+        rt = runtime or find_runtime()
+        if rt is None:
+            raise BuildError("no container runtime (podman/docker) found")
 
     tmp_root = state_dir / "builds" / "tmp"
     tmp_root.mkdir(parents=True, exist_ok=True)
@@ -381,16 +386,17 @@ def run_build(
 
         if is_native:
             out_dir = state_dir / "builds" / resolved.sha / request.target
-            yield from build_native(request.target, context, out_dir, stream_runner, copier)
+            try:
+                yield from build_native(request.target, context, out_dir, stream_runner, copier)
+            except BuildError:
+                shutil.rmtree(out_dir, ignore_errors=True)
+                raise
             artifact = Artifact(
                 target=request.target, requested_ref=request.ref, sha=resolved.sha,
                 build_number=resolved.build_number, built_at=_now_iso(),
                 binary_path=str(out_dir / "llama-server"),
             )
         else:
-            rt = runtime or find_runtime()
-            if rt is None:
-                raise BuildError("no container runtime (podman/docker) found")
             tag = image_tag_for(request.target, request.ref)
             yield from build_image(request.target, context, tag, repo_root, rt, stream_runner)
             artifact = Artifact(
