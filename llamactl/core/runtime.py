@@ -18,7 +18,7 @@ Runner = Callable[[list[str]], subprocess.CompletedProcess]
 
 
 def _default_runner(cmd: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
 
 @dataclass(frozen=True)

@@ -113,3 +113,46 @@ async def test_serve_screen_reattaches_on_mount(tmp_path: Path, monkeypatch) -> 
         serve = app.query_one(ServeScreen)
         assert serve.has_running_server
         assert serve._server_info == fake_info
+
+
+@pytest.mark.asyncio
+async def test_dead_native_server_clears_state(tmp_path: Path, monkeypatch) -> None:
+    """When liveness probe returns False for a native PID, state clears to EXITED."""
+    from llamactl.core.lifecycle import ServerInfo, ServerState
+    from llamactl.ui.app import LlamaCtlApp
+    import llamactl.core.lifecycle as lc_mod
+    import llamactl.ui.screens.serve as serve_mod
+
+    fake_info = ServerInfo(
+        model_id="qwen3-9b", backend="rocm", preset="",
+        mode="native", host="0.0.0.0", port=8080,
+        started_at="2026-06-16T14:00:00",
+        pid=9999,
+    )
+    # Simulate server already running on mount
+    monkeypatch.setattr(lc_mod, "find_running", lambda *_a, **_kw: fake_info)
+    # Simulate the native process being dead
+    monkeypatch.setattr(serve_mod, "_native_pid_alive", lambda pid: False)
+
+    (tmp_path / "configs" / "models").mkdir(parents=True)
+    (tmp_path / "configs" / "llamactl.toml").write_text(
+        'default_backend = "rocm"\ndefault_mode = "container"\n'
+        'port = 8080\nvram_budget_gb = 11.0\nname_prefix = "llamactl"\n'
+    )
+    (tmp_path / "state").mkdir()
+
+    app = LlamaCtlApp(repo_root=tmp_path)
+    async with app.run_test(headless=True) as pilot:
+        from llamactl.ui.screens.serve import ServeScreen, _StatusHeader
+        serve = app.query_one(ServeScreen)
+        # Confirm server is attached on mount
+        assert serve.has_running_server
+
+        # Manually invoke one poll cycle to trigger the liveness probe
+        await serve._poll_vram_and_health()
+        await pilot.pause(0)
+
+        # Server info should be cleared and status set to EXITED
+        assert serve._server_info is None
+        header = serve.query_one(_StatusHeader)
+        assert header.state == ServerState.EXITED
