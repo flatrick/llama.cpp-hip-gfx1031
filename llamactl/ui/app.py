@@ -60,4 +60,5 @@ class LlamaCtlApp(App):
                 severity="warning",
                 timeout=4,
             )
+            return
         self.exit()
