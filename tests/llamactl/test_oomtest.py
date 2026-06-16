@@ -4,8 +4,11 @@ from llamactl.core.lifecycle import ServerInfo
 from llamactl.core.oomtest import (
     NativeInspector,
     NativeLogReader,
+    OomTestResult,
     build_vram_monitor,
+    classify_verdict,
 )
+from stress_harness.models import PhaseResult, PhaseSample
 
 
 def test_build_vram_monitor_native_uses_pid(monkeypatch):
@@ -85,3 +88,40 @@ def test_native_log_reader_handles_nonexistent_file(tmp_path):
     reader = NativeLogReader(str(tmp_path / "does-not-exist.log"))
     assert reader.line_count() == 0
     assert reader.dump_lines(5) == []
+
+
+def _phase(key, success=True, samples=None, last_ok=None, summary=""):
+    return PhaseResult(key=key, title=key.title(), samples=samples or [],
+                       success=success, summary=summary, last_ok_tokens=last_ok)
+
+
+def test_classify_ok_when_under_budget():
+    phases = [_phase("ramp", last_ok=120000),
+              _phase("boundary")]
+    res = classify_verdict(phases, peak_vram_gb=9.5, budget_gb=11.0, vram_available=True)
+    assert res.verdict == "OK"
+    assert res.peak_vram_gb == 9.5
+    assert res.last_ok_tokens == 120000
+
+
+def test_classify_warn_when_at_or_over_budget():
+    res = classify_verdict([_phase("ramp")], peak_vram_gb=11.2, budget_gb=11.0,
+                           vram_available=True)
+    assert res.verdict == "WARN"
+
+
+def test_classify_fail_on_phase_failure():
+    phases = [_phase("ramp"), _phase("cold-start", success=False,
+                                     summary="OOM at 130k tokens")]
+    res = classify_verdict(phases, peak_vram_gb=10.0, budget_gb=11.0,
+                           vram_available=True)
+    assert res.verdict == "FAIL"
+    assert res.failed_phase == "cold-start"
+    assert "OOM" in res.detail
+
+
+def test_classify_degraded_when_vram_unavailable():
+    res = classify_verdict([_phase("ramp")], peak_vram_gb=None, budget_gb=11.0,
+                           vram_available=False)
+    assert res.verdict == "OK (degraded)"
+    assert res.peak_vram_gb is None

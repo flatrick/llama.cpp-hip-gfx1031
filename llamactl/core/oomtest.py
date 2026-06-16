@@ -8,7 +8,9 @@ servers.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
+from stress_harness.models import PhaseResult
 from stress_harness.monitoring import VramMonitor
 
 from llamactl.core.lifecycle import ServerInfo
@@ -94,3 +96,49 @@ class NativeInspector:
 
     def api_host_port(self) -> int | None:
         return None
+
+
+@dataclass(frozen=True, slots=True)
+class OomTestResult:
+    verdict: str            # "OK" | "WARN" | "FAIL" | "OK (degraded)"
+    peak_vram_gb: float | None
+    last_ok_tokens: int | None
+    failed_phase: str | None
+    detail: str
+
+
+def classify_verdict(
+    phases: list[PhaseResult],
+    peak_vram_gb: float | None,
+    budget_gb: float,
+    vram_available: bool,
+) -> OomTestResult:
+    """Classify a completed OOM test run into a verdict.
+
+    Precedence: FAIL > OK (degraded) > WARN > OK.
+    """
+    last_ok = next((p.last_ok_tokens for p in phases if p.last_ok_tokens), None)
+    failed = next((p for p in phases if not p.success), None)
+    if failed is not None:
+        detail = (
+            failed.summary
+            or " / ".join(failed.log_excerpt[-3:])
+            or "phase failed"
+        )
+        return OomTestResult("FAIL", peak_vram_gb, last_ok, failed.key, detail)
+    if not vram_available:
+        return OomTestResult(
+            "OK (degraded)", None, last_ok, None,
+            "All phases passed. VRAM unavailable — boundary + liveness only; "
+            "leak detection skipped.",
+        )
+    if peak_vram_gb is not None and peak_vram_gb >= budget_gb:
+        return OomTestResult(
+            "WARN", peak_vram_gb, last_ok, None,
+            f"All phases passed but peak {peak_vram_gb:.2f} GB ≥ budget {budget_gb:.0f} GB.",
+        )
+    peak_str = f"{peak_vram_gb:.2f} GB" if peak_vram_gb is not None else "n/a"
+    return OomTestResult(
+        "OK", peak_vram_gb, last_ok, None,
+        f"All phases passed. Peak VRAM {peak_str}, under the {budget_gb:.0f} GB budget.",
+    )
