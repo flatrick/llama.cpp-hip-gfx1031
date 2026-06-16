@@ -12,6 +12,7 @@ from textual.widgets.option_list import Option
 from textual.widgets import OptionList
 
 from llamactl.core import config_edit as ce
+from llamactl.core.config import _build_model_config, resolve_settings
 
 if TYPE_CHECKING:
     from llamactl.ui.app import LlamaCtlApp
@@ -30,6 +31,9 @@ class ModelsScreen(Widget):
     ModelsScreen .button-row { height: auto; layout: horizontal; }
     ModelsScreen .button-row Button { margin-right: 1; }
     ModelsScreen #editor-title { height: auto; padding: 0 1; }
+    ModelsScreen #resolved-view { height: 1fr; border: solid $panel; display: none; }
+    ModelsScreen.-resolved #editor-tree { display: none; }
+    ModelsScreen.-resolved #resolved-view { display: block; }
     """
 
     def __init__(self) -> None:
@@ -43,6 +47,7 @@ class ModelsScreen(Widget):
         with Widget(id="editor-pane"):
             yield Static("(no model selected)", id="editor-title")
             yield Tree("model", id="editor-tree")
+            yield Static("", id="resolved-view")
             with Widget(id="edit-bar"):
                 yield Select(options=[], id="section-select", allow_blank=True)
                 yield Input(placeholder="key", id="key-input")
@@ -54,6 +59,7 @@ class ModelsScreen(Widget):
                 yield Button("New", id="btn-new")
                 yield Button("Duplicate", id="btn-dup")
                 yield Button("Delete model", id="btn-del-model", variant="error")
+                yield Button("Resolved view", id="btn-resolved")
 
     def on_mount(self) -> None:
         self._reload_model_list()
@@ -201,3 +207,21 @@ class ModelsScreen(Widget):
                 self.apply_delete(section, key)
         elif bid == "btn-save":
             self.action_save()
+        elif bid == "btn-resolved":
+            if not self.has_class("-resolved"):
+                app: LlamaCtlApp = self.app  # type: ignore[assignment]
+                backend = app._global_cfg.default_backend
+                self.query_one("#resolved-view", Static).update(self.resolved_text(backend, None))
+            self.toggle_class("-resolved")
+
+    def resolved_text(self, backend: str, preset: str | None) -> str:
+        if self._doc is None or self._model_id is None:
+            return "(no model selected)"
+        path = self._models_dir / f"{self._model_id}.toml"
+        try:
+            mc = _build_model_config(self._doc.unwrap(), path)
+            resolved = resolve_settings(mc, preset, backend, {})
+        except Exception as exc:
+            return f"[red]{exc}[/red]"
+        lines = [f"{k} = {ce.value_to_literal(v)}" for k, v in sorted(resolved.items())]
+        return "\n".join(lines) or "(empty)"

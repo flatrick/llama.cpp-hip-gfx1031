@@ -92,3 +92,31 @@ async def test_set_button_with_blank_section_targets_top_level(tmp_path: Path) -
         await pilot.pause()
         assert ms._doc["name"] == "Renamed"
         assert "Select" not in ms._doc   # no spurious doc["Select"]["NULL"] table
+
+
+@pytest.mark.asyncio
+async def test_resolved_view_renders_merged_settings(tmp_path: Path) -> None:
+    from llamactl.ui.app import LlamaCtlApp
+    from llamactl.ui.screens.models import ModelsScreen
+
+    (tmp_path / "configs" / "models").mkdir(parents=True)
+    (tmp_path / "configs" / "llamactl.toml").write_text(
+        'default_backend = "rocm"\ndefault_mode = "container"\nport = 8080\n'
+        'vram_budget_gb = 11.0\nname_prefix = "llamactl"\n'
+    )
+    (tmp_path / "configs" / "models" / "m.toml").write_text(
+        'name = "M"\nhf = "org/m:f"\n\n[settings]\nctx_size = 4096\n'
+        '\n[backends.rocm]\ncache_type_k = "f16"\n'
+    )
+    (tmp_path / "state").mkdir()
+
+    app = LlamaCtlApp(repo_root=tmp_path)
+    async with app.run_test(headless=True) as pilot:
+        app.query_one("TabbedContent").active = "models"
+        await pilot.pause()
+        ms = app.query_one(ModelsScreen)
+        ms.select_model("m")
+        await pilot.pause()
+        text = ms.resolved_text("rocm", None)
+        assert "ctx_size" in text and "4096" in text
+        assert "cache_type_k" in text and "f16" in text
