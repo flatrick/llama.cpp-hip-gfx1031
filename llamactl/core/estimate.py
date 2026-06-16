@@ -226,6 +226,13 @@ def estimate_vram(
     except Exception as exc:  # corrupt/unreadable header
         _log.warning("estimate: cannot read GGUF %s: %s", path, exc)
         return None
+    if not params.get("kv_heads") or not params.get("head_dim"):
+        _log.warning(
+            "estimate: GGUF %s lacks KV-cache metadata (kv_heads=%s, head_dim=%s); "
+            "estimate unavailable rather than under-counting KV", path,
+            params.get("kv_heads"), params.get("head_dim"),
+        )
+        return None
     return compute_estimate(
         params=params,
         ctx_size=int(resolved_settings.get("ctx_size", _DEFAULT_CTX)),
