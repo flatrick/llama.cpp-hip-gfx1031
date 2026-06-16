@@ -111,3 +111,17 @@ def test_ensure_section_creates_empty_preset_table():
     doc = _doc('hf = "x"\n')
     ensure_section(doc, "presets.thinking")
     assert "thinking" in doc["presets"]
+
+
+def test_section_table_returns_none_on_scalar_collision():
+    from llamactl.core.config_edit import _section_table
+    # Integer scalars raise TypeError on `in` — the guard must catch this.
+    doc = _doc('backends = 42\n')   # "backends" holds an integer, not a table
+    # Descending into a scalar must not crash; create=False yields None.
+    assert _section_table(doc, "backends.rocm", create=False) is None
+
+
+def test_delete_key_no_crash_on_scalar_collision():
+    doc = _doc('backends = 42\n')
+    delete_key(doc, "backends.rocm", "x")   # must be a silent no-op, not a TypeError
+    assert doc["backends"] == 42

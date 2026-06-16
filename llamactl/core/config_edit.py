@@ -57,13 +57,19 @@ def save_doc(path: Path, doc: TOMLDocument) -> None:
     tmp.replace(path)
 
 
-def _section_table(doc: TOMLDocument, section: str, create: bool):
+def _section_table(doc: TOMLDocument, section: str, create: bool) -> Any:
     """Return the table for `section` ("" = doc root). create=True makes any
-    missing intermediate tables; create=False returns None if absent."""
+    missing intermediate tables; create=False returns None if absent. If a path
+    segment is occupied by a non-table value, returns None (create=False) or
+    raises ValueError (create=True) instead of crashing."""
     if section == "":
         return doc
     node: Any = doc
     for part in section.split("."):
+        if not isinstance(node, dict):  # tomlkit tables/documents are dicts; scalars are not
+            if not create:
+                return None
+            raise ValueError(f"cannot descend into non-table section: {section!r}")
         if part not in node:
             if not create:
                 return None
