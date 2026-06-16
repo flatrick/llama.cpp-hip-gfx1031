@@ -7,8 +7,12 @@ unavailable") when the GGUF is not on disk; never blocks launch.
 """
 from __future__ import annotations
 
+import glob
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+from llamactl.core.config import GlobalConfig
 
 # Calibrated constants (ported from vram_calc.py).
 CACHE_TYPE_BYTES: dict[str, float] = {
@@ -59,3 +63,32 @@ def compute_estimate(
         compute_gb=compute_gb,
         overhead_gb=VRAM_OVERHEAD_GB,
     )
+
+
+def resolve_gguf_path(hf_spec: str, global_cfg: GlobalConfig) -> Path | None:
+    """Resolve an `org/repo:QUANT` -hf spec to a local .gguf path, or None.
+
+    Order: llama.cpp -hf cache (flattened names) → HF hub snapshot layout.
+    Local-only; never raises.
+    """
+    if ":" not in hf_spec or "/" not in hf_spec.split(":", 1)[0]:
+        return None
+    repo_part, quant = hf_spec.split(":", 1)
+    org, repo = repo_part.split("/", 1)
+
+    # 1. llama.cpp -hf cache: flattened filenames containing repo + quant.
+    llama_cache = Path(global_cfg.llama_cache).expanduser()
+    for pattern in (f"*{repo}*{quant}*.gguf", f"*{quant}*.gguf"):
+        matches = sorted(glob.glob(str(llama_cache / pattern)))
+        if matches:
+            return Path(matches[-1])
+
+    # 2. HF hub snapshot layout (huggingface-cli downloads).
+    hf_cache = Path(global_cfg.hf_cache).expanduser()
+    hub = hf_cache / "hub" if (hf_cache / "hub").is_dir() else hf_cache
+    pattern = str(hub / f"models--{org}--{repo}" / "snapshots" / "*" / f"*{quant}*.gguf")
+    matches = sorted(glob.glob(pattern))
+    if matches:
+        return Path(matches[-1])
+
+    return None
