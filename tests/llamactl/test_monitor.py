@@ -57,6 +57,30 @@ def test_read_vram_kib_returns_zero_for_missing_pid(tmp_path):
     assert total == 0
 
 
+def test_parse_fdinfo_normalises_mib_to_kib(tmp_path):
+    from llamactl.core.monitor import _parse_fdinfo_file
+    p = tmp_path / "fd0"
+    p.write_text("drm-client-id:\t42\ndrm-memory-vram:\t2 MiB\n")
+    _, fields = _parse_fdinfo_file(str(p))
+    assert fields["drm-memory-vram"] == 2 * 1024
+
+
+def test_parse_fdinfo_normalises_gib_to_kib(tmp_path):
+    from llamactl.core.monitor import _parse_fdinfo_file
+    p = tmp_path / "fd0"
+    p.write_text("drm-client-id:\t42\ndrm-memory-vram:\t1 GiB\n")
+    _, fields = _parse_fdinfo_file(str(p))
+    assert fields["drm-memory-vram"] == 1024 * 1024
+
+
+def test_parse_fdinfo_unknown_unit_treated_as_kib(tmp_path):
+    from llamactl.core.monitor import _parse_fdinfo_file
+    p = tmp_path / "fd0"
+    p.write_text("drm-client-id:\t42\ndrm-memory-vram:\t500 XUNIT\n")
+    _, fields = _parse_fdinfo_file(str(p))
+    assert fields["drm-memory-vram"] == 500  # treated as KiB
+
+
 # ── check_health ──────────────────────────────────────────────────────────────
 
 def _mock_http_200():

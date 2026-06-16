@@ -118,6 +118,23 @@ def container_logs_cmd(runtime: str, name: str) -> list[str]:
     return [runtime, "logs", "-f", name]
 
 
+def get_container_pid(
+    container_name: str,
+    runtime: str,
+    runner: Runner = _default_runner,
+) -> int | None:
+    """Return the host PID of the container's main process, or None on error/not-running."""
+    result = runner([runtime, "inspect", "--format", "{{.State.Pid}}", container_name])
+    if result.returncode != 0:
+        return None
+    pid_str = result.stdout.strip()
+    try:
+        pid = int(pid_str)
+        return pid if pid > 0 else None
+    except ValueError:
+        return None
+
+
 def dri_passthrough_flags(
     _glob=None,   # injectable: defaults to glob.glob
     _stat=None,   # injectable: defaults to os.stat

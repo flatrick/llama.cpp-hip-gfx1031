@@ -369,40 +369,71 @@ class ServeScreen(Widget):
         """Called every 2 seconds by set_interval. Updates VRAM gauge and health state."""
         if self._server_info is None:
             return
-        import asyncio
-        from llamactl.core.monitor import check_health, read_vram_kib
-        app: LlamaCtlApp = self.app  # type: ignore[assignment]
-        port = self._server_info.port
-        pid_str = str(self._server_info.pid) if self._server_info.pid is not None else None
-        mode = self._server_info.mode
+        try:
+            import asyncio
+            from llamactl.core.monitor import check_health, read_vram_kib
+            app: LlamaCtlApp = self.app  # type: ignore[assignment]
+            port = self._server_info.port
+            pid_str = (
+                str(self._server_info.pid)
+                if self._server_info.pid is not None
+                else None
+            )
+            mode = self._server_info.mode
 
-        # Liveness probe — detect dead process/container before health check
-        alive = True
-        if mode == "native" and self._server_info.pid is not None:
-            alive = await asyncio.to_thread(_native_pid_alive, self._server_info.pid)
-        elif mode == "container" and self._server_info.container_name:
-            alive = await asyncio.to_thread(_container_alive, self._server_info.container_name)
+            # Liveness probe — detect dead process/container before health check
+            alive = True
+            if mode == "native" and self._server_info.pid is not None:
+                alive = await asyncio.to_thread(_native_pid_alive, self._server_info.pid)
+            elif mode == "container" and self._server_info.container_name:
+                alive = await asyncio.to_thread(
+                    _container_alive, self._server_info.container_name
+                )
 
-        if not alive:
-            self._set_server(None)
+            if not alive:
+                self._set_server(None)
+                header = self.query_one(_StatusHeader)
+                header.state = ServerState.EXITED
+                return
+
+            new_state = await asyncio.to_thread(check_health, port)
             header = self.query_one(_StatusHeader)
-            header.state = ServerState.EXITED
-            return
+            header.state = new_state
 
-        new_state = await asyncio.to_thread(check_health, port)
-        header = self.query_one(_StatusHeader)
-        header.state = new_state
+            # Resolve VRAM PID: native has pid, container needs inspect
+            vram_pid = pid_str
+            if (
+                vram_pid is None
+                and mode == "container"
+                and self._server_info.container_name
+            ):
+                from llamactl.core.runtime import find_runtime, get_container_pid
+                rt = find_runtime()
+                if rt is not None:
+                    container_pid = await asyncio.to_thread(
+                        get_container_pid, self._server_info.container_name, rt
+                    )
+                    if container_pid is not None:
+                        vram_pid = str(container_pid)
 
-        if pid_str is not None:
-            vram_kib = await asyncio.to_thread(read_vram_kib, pid_str)
-            gauge = self.query_one(_VramGauge)
-            gauge.vram_kib = vram_kib
-            gauge.budget_kib = int(app._global_cfg.vram_budget_gb * 1024 * 1024)
+            if vram_pid is not None:
+                vram_kib = await asyncio.to_thread(read_vram_kib, vram_pid)
+                gauge = self.query_one(_VramGauge)
+                gauge.vram_kib = vram_kib
+                gauge.budget_kib = int(app._global_cfg.vram_budget_gb * 1024 * 1024)
+        except Exception as exc:
+            try:
+                log = self.query_one("#log-pane", RichLog)
+                log.write(f"[red]Poll error:[/red] {exc}")
+            except Exception:
+                pass
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-launch":
+            event.button.disabled = True  # prevent double-launch while worker runs
             self.run_worker(self._action_launch())
         elif event.button.id == "btn-stop":
+            event.button.disabled = True  # prevent double-stop while worker runs
             self.run_worker(self._action_stop())
         elif event.button.id == "btn-copy-argv":
             self._action_copy_argv()
@@ -416,6 +447,7 @@ class ServeScreen(Widget):
         model, backend, preset = form.get_launch_params()
         if model is None:
             self.notify("Select a model first.", severity="warning")
+            form.query_one("#btn-launch", Button).disabled = False
             return
         mode_select = form.query_one("#mode-select", Select)
         mode = str(mode_select.value or "container")
@@ -424,18 +456,20 @@ class ServeScreen(Widget):
             settings = resolve_settings(model, preset, backend, {})
         except Exception as exc:
             self.notify(str(exc), severity="error")
+            form.query_one("#btn-launch", Button).disabled = False
             return
         try:
             if mode == "container":
                 rt = find_runtime()
                 if rt is None:
                     self.notify("No container runtime found (podman/docker).", severity="error")
+                    form.query_one("#btn-launch", Button).disabled = False
                     return
                 image = resolve_image(model, backend)
                 info = await asyncio.to_thread(
                     launch_container,
                     rt, app._global_cfg, model, settings,
-                    backend, preset or "", image, app._state_dir,
+                    backend, preset or "", image,
                 )
                 log.write(f"[green]Container started:[/green] {info.container_name}")
             else:
@@ -443,6 +477,7 @@ class ServeScreen(Widget):
                 binary = _shutil.which("llama-server") or ""
                 if not binary:
                     self.notify("llama-server not found in PATH.", severity="error")
+                    form.query_one("#btn-launch", Button).disabled = False
                     return
                 info = await asyncio.to_thread(
                     launch_native,
@@ -453,7 +488,13 @@ class ServeScreen(Widget):
         except Exception as exc:
             self.notify(f"Launch failed: {exc}", severity="error")
             log.write(f"[red]Launch error:[/red] {exc}")
+            form.query_one("#btn-launch", Button).disabled = False
             return
+        self.notify(
+            "Server binds 0.0.0.0 — accessible on all network interfaces.",
+            severity="warning",
+            timeout=8,
+        )
         self._set_server(info)
 
     async def _action_stop(self) -> None:
@@ -468,10 +509,16 @@ class ServeScreen(Widget):
             rt = find_runtime() if info.mode == "container" else None
             await asyncio.to_thread(stop_server, info, rt)
             log.write("[yellow]Server stopped.[/yellow]")
+            self._set_server(None)  # only on success
         except Exception as exc:
             self.notify(f"Stop failed: {exc}", severity="error")
             log.write(f"[red]Stop error:[/red] {exc}")
-        self._set_server(None)
+            # Re-enable stop button (it was disabled before worker ran)
+            try:
+                form = self.query_one(_LaunchForm)
+                form.query_one("#btn-stop", Button).disabled = False
+            except Exception:
+                pass
 
     def _action_copy_argv(self) -> None:
         from llamactl.core.config import resolve_settings

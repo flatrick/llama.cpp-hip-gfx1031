@@ -7,7 +7,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Footer, Header, Static, TabbedContent, TabPane
 
-from llamactl.core.config import GlobalConfig, load_all, load_global
+from llamactl.core.config import GlobalConfig, ModelConfig, load_all, load_global
 from llamactl.core.registry import load_registry
 from llamactl.ui.screens.serve import ServeScreen
 
@@ -27,17 +27,20 @@ class LlamaCtlApp(App):
         self._state_dir = repo_root / "state"
         # These are set in on_mount so the app can compose first
         self._global_cfg: GlobalConfig = GlobalConfig()
-        self._models: list = []
-        self._model_errors: dict = {}
-        self._artifacts: list = []
+        self._models: list[ModelConfig] = []
+        self._model_errors: dict[Path, str] = {}
+        self._artifacts: list = []  # registry type TBD, keep as list for now
 
     def on_mount(self) -> None:
         self._global_cfg = load_global(self._config_dir / "llamactl.toml")
         self._models, self._model_errors = load_all(self._config_dir / "models")
         try:
             self._artifacts = load_registry(self._state_dir / "registry.toml")
-        except Exception:
+        except FileNotFoundError:
             self._artifacts = []
+        except Exception as exc:
+            self._artifacts = []
+            self.notify(f"Registry load failed: {exc}", severity="warning", timeout=5)
 
     def compose(self) -> ComposeResult:
         yield Header()

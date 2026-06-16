@@ -11,6 +11,14 @@ import urllib.request
 
 from llamactl.core.lifecycle import ServerState
 
+_UNIT_MULTIPLIERS: dict[str, float] = {
+    "kib": 1.0,
+    "mib": 1024.0,
+    "gib": 1024.0 * 1024.0,
+    "b": 1.0 / 1024.0,
+    "bytes": 1.0 / 1024.0,
+}
+
 
 def _parse_fdinfo_file(path: str) -> tuple[str | None, dict[str, int]]:
     """
@@ -47,7 +55,12 @@ def _parse_fdinfo_file(path: str) -> tuple[str | None, dict[str, int]]:
                 if not parts:
                     continue
                 try:
-                    fields[key] = int(parts[0])
+                    raw_int = int(parts[0])
+                    if len(parts) >= 2:
+                        multiplier = _UNIT_MULTIPLIERS.get(parts[1].lower(), 1.0)
+                        fields[key] = int(raw_int * multiplier)
+                    else:
+                        fields[key] = raw_int  # assume KiB if no unit
                 except ValueError:
                     continue
     except OSError:

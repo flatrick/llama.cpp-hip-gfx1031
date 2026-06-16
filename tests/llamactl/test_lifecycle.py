@@ -105,7 +105,6 @@ def test_launch_container_rocm_device_flags(tmp_path):
         backend="rocm",
         preset="",
         image=DEFAULT_ROCM_IMAGE,
-        state_dir=tmp_path,
         runner=runner,
     )
 
@@ -127,7 +126,6 @@ def test_launch_container_includes_labels(tmp_path):
         backend="rocm",
         preset="thinking",
         image=DEFAULT_ROCM_IMAGE,
-        state_dir=tmp_path,
         runner=runner,
     )
 
@@ -149,7 +147,6 @@ def test_launch_container_raises_on_nonzero_exit(tmp_path):
             backend="rocm",
             preset="",
             image=DEFAULT_ROCM_IMAGE,
-            state_dir=tmp_path,
             runner=runner,
         )
 
@@ -167,7 +164,6 @@ def test_launch_container_vulkan_calls_dri_passthrough(tmp_path):
         backend="vulkan",
         preset="",
         image=DEFAULT_VULKAN_IMAGE,
-        state_dir=tmp_path,
         runner=runner,
         dri_flags_fn=fake_dri,
     )
@@ -187,7 +183,6 @@ def test_launch_container_returns_server_info(tmp_path):
         backend="rocm",
         preset="",
         image=DEFAULT_ROCM_IMAGE,
-        state_dir=tmp_path,
         runner=runner,
     )
     assert info.mode == "container"

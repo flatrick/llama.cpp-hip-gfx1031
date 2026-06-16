@@ -114,6 +114,32 @@ def test_container_logs_cmd_includes_follow_and_name():
     assert cmd[0] == "/usr/bin/podman"
 
 
+# ── get_container_pid ─────────────────────────────────────────────────────────
+
+def test_get_container_pid_returns_pid_on_success():
+    from llamactl.core.runtime import get_container_pid
+    pid = get_container_pid("my-container", "podman", runner=lambda _: _ok("12345\n"))
+    assert pid == 12345
+
+
+def test_get_container_pid_returns_none_on_nonzero_exit():
+    from llamactl.core.runtime import get_container_pid
+    pid = get_container_pid("missing", "podman", runner=lambda _: _err())
+    assert pid is None
+
+
+def test_get_container_pid_returns_none_when_pid_is_zero():
+    from llamactl.core.runtime import get_container_pid
+    pid = get_container_pid("stopped-container", "podman", runner=lambda _: _ok("0\n"))
+    assert pid is None
+
+
+def test_get_container_pid_returns_none_on_non_integer_output():
+    from llamactl.core.runtime import get_container_pid
+    pid = get_container_pid("my-container", "podman", runner=lambda _: _ok("not-a-pid\n"))
+    assert pid is None
+
+
 # ── dri_passthrough_flags ─────────────────────────────────────────────────────
 
 def _fake_stat(gid: int):

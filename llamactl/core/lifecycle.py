@@ -120,7 +120,6 @@ def launch_container(
     backend: str,
     preset: str,
     image: str,
-    state_dir: Path,
     runner: Runner = _default_runner,
     dri_flags_fn=dri_passthrough_flags,
 ) -> ServerInfo:
