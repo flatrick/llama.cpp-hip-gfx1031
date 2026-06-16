@@ -120,3 +120,46 @@ async def test_resolved_view_renders_merged_settings(tmp_path: Path) -> None:
         text = ms.resolved_text("rocm", None)
         assert "ctx_size" in text and "4096" in text
         assert "cache_type_k" in text and "f16" in text
+
+
+@pytest.mark.asyncio
+async def test_resolved_view_selectors_drive_backend_and_preset(tmp_path: Path) -> None:
+    from llamactl.ui.app import LlamaCtlApp
+    from llamactl.ui.screens.models import ModelsScreen
+    from textual.widgets import Button, Select, Static
+
+    (tmp_path / "configs" / "models").mkdir(parents=True)
+    (tmp_path / "configs" / "llamactl.toml").write_text(
+        'default_backend = "rocm"\ndefault_mode = "container"\nport = 8080\n'
+        'vram_budget_gb = 11.0\nname_prefix = "llamactl"\n'
+    )
+    (tmp_path / "configs" / "models" / "m.toml").write_text(
+        'name = "M"\nhf = "org/m:f"\n\n[settings]\ntemp = 0.7\n'
+        '\n[backends.vulkan]\ncache_type_k = "q8_0"\n'
+        '\n[presets.creative]\ntemp = 1.2\n'
+    )
+    (tmp_path / "state").mkdir()
+
+    app = LlamaCtlApp(repo_root=tmp_path)
+    async with app.run_test(headless=True) as pilot:
+        app.query_one("TabbedContent").active = "models"
+        await pilot.pause()
+        ms = app.query_one(ModelsScreen)
+        ms.select_model("m")
+        await pilot.pause()
+        # Enter resolved mode
+        ms.on_button_pressed(Button.Pressed(ms.query_one("#btn-resolved", Button)))
+        await pilot.pause()
+        # The selectors exist and a preset option for 'creative' is available
+        rv_backend = ms.query_one("#rv-backend", Select)
+        rv_preset = ms.query_one("#rv-preset", Select)
+        preset_values = [v for _label, v in rv_preset._options]
+        assert "creative" in preset_values
+        # Drive vulkan backend + creative preset, then re-render
+        rv_backend.value = "vulkan"
+        rv_preset.value = "creative"
+        ms.render_resolved()
+        await pilot.pause()
+        text = ms.query_one("#resolved-view", Static).content
+        assert "cache_type_k" in text and "q8_0" in text   # vulkan override merged
+        assert "temp = 1.2" in text                          # creative preset wins over base 0.7

@@ -34,6 +34,9 @@ class ModelsScreen(Widget):
     ModelsScreen #resolved-view { height: 1fr; border: solid $panel; display: none; }
     ModelsScreen.-resolved #editor-tree { display: none; }
     ModelsScreen.-resolved #resolved-view { display: block; }
+    ModelsScreen #resolved-bar { height: auto; layout: horizontal; display: none; }
+    ModelsScreen #resolved-bar Select { width: 1fr; margin-right: 1; }
+    ModelsScreen.-resolved #resolved-bar { display: block; }
     """
 
     def __init__(self) -> None:
@@ -47,6 +50,10 @@ class ModelsScreen(Widget):
         with Widget(id="editor-pane"):
             yield Static("(no model selected)", id="editor-title")
             yield Tree("model", id="editor-tree")
+            with Widget(id="resolved-bar"):
+                yield Select(options=[("ROCm", "rocm"), ("Vulkan", "vulkan")],
+                             value="rocm", id="rv-backend")
+                yield Select(options=[], id="rv-preset", allow_blank=True)
             yield Static("", id="resolved-view")
             with Widget(id="edit-bar"):
                 yield Select(options=[], id="section-select", allow_blank=True)
@@ -209,10 +216,23 @@ class ModelsScreen(Widget):
             self.action_save()
         elif bid == "btn-resolved":
             if not self.has_class("-resolved"):
-                app: LlamaCtlApp = self.app  # type: ignore[assignment]
-                backend = app._global_cfg.default_backend
-                self.query_one("#resolved-view", Static).update(self.resolved_text(backend, None))
+                preset_opts = []
+                if self._doc is not None and "presets" in self._doc:
+                    preset_opts = [(pk, pk) for pk in self._doc["presets"]]
+                self.query_one("#rv-preset", Select).set_options(preset_opts)
+                self.render_resolved()
             self.toggle_class("-resolved")
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id in ("rv-backend", "rv-preset") and self.has_class("-resolved"):
+            self.render_resolved()
+
+    def render_resolved(self) -> None:
+        backend_val = self.query_one("#rv-backend", Select).value
+        backend = "rocm" if backend_val is Select.NULL or backend_val is None else str(backend_val)
+        preset_val = self.query_one("#rv-preset", Select).value
+        preset = None if preset_val is Select.NULL or preset_val is None else str(preset_val)
+        self.query_one("#resolved-view", Static).update(self.resolved_text(backend, preset))
 
     def resolved_text(self, backend: str, preset: str | None) -> str:
         if self._doc is None or self._model_id is None:
