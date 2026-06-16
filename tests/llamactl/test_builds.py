@@ -7,6 +7,7 @@ import pytest
 
 from llamactl.core.builds import (
     BuildError,
+    BuildRequest,
     ROCM_CMAKE_FLAGS,
     ResolvedRef,
     StreamRunner,
@@ -19,7 +20,9 @@ from llamactl.core.builds import (
     export_snapshot,
     image_tag_for,
     resolve_ref,
+    run_build,
 )
+from llamactl.core.registry import load_registry
 
 
 _LS_REMOTE = "\n".join([
@@ -302,3 +305,63 @@ def test_build_native_vulkan_uses_vulkan_flags(tmp_path):
                       stream, lambda s, d: None))
     assert "-DGGML_VULKAN=ON" in cmds[0]
     assert "-DGGML_HIP=ON" not in cmds[0]
+
+
+def _stub_core(monkeypatch, *, fail_build=False):
+    """Stub resolve_ref/export_snapshot/build_* so run_build needs no real git."""
+    import llamactl.core.builds as b
+    monkeypatch.setattr(b, "resolve_ref",
+                        lambda *a, **k: ResolvedRef("sha123456789", "b10", "refs/tags/b10", "x"))
+    monkeypatch.setattr(b, "export_snapshot", lambda *a, **k: None)
+
+    def fake_image(*a, **k):
+        yield "building image"
+        if fail_build:
+            raise BuildError("podman build exploded")
+
+    monkeypatch.setattr(b, "build_image", fake_image)
+    monkeypatch.setattr(b, "find_runtime", lambda: "podman")
+
+
+def test_run_build_image_success_writes_one_artifact(tmp_path, monkeypatch):
+    _stub_core(monkeypatch)
+    reg = tmp_path / "registry.toml"
+    lines = list(run_build(
+        BuildRequest("latest-tag", "rocm-image"),
+        repo_root=tmp_path, state_dir=tmp_path, submodule_dir=tmp_path / "sub",
+        registry_path=reg,
+    ))
+    artifacts = load_registry(reg)
+    assert len(artifacts) == 1
+    a = artifacts[0]
+    assert a.target == "rocm-image"
+    assert a.sha == "sha123456789"
+    assert a.build_number == "b10"
+    assert a.image_tag == "llama-cpp-gfx1031:latest-tag"
+    assert any("Registered" in line for line in lines)
+
+
+def test_run_build_failure_writes_no_artifact(tmp_path, monkeypatch):
+    _stub_core(monkeypatch, fail_build=True)
+    reg = tmp_path / "registry.toml"
+    with pytest.raises(BuildError, match="podman build exploded"):
+        list(run_build(
+            BuildRequest("latest-tag", "rocm-image"),
+            repo_root=tmp_path, state_dir=tmp_path, submodule_dir=tmp_path / "sub",
+            registry_path=reg,
+        ))
+    assert load_registry(reg) == []
+
+
+def test_run_build_native_refuses_when_toolchain_missing(tmp_path, monkeypatch):
+    import llamactl.core.builds as b
+    monkeypatch.setattr(b, "resolve_ref",
+                        lambda *a, **k: ResolvedRef("sha", "", "sha", "x"))
+    monkeypatch.setattr(b, "detect_native_toolchain",
+                        lambda *a, **k: ToolchainStatus(ok=False, missing=("hipcc",)))
+    with pytest.raises(BuildError, match="toolchain"):
+        list(run_build(
+            BuildRequest("commit:sha", "rocm-native"),
+            repo_root=tmp_path, state_dir=tmp_path, submodule_dir=tmp_path / "sub",
+            registry_path=tmp_path / "registry.toml",
+        ))

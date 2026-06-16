@@ -7,17 +7,20 @@ the snapshot pipe uses Extractor. core never imports UI.
 
 from __future__ import annotations
 
+import datetime
 import os
 import re
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 from llamactl.core.lifecycle import DEFAULT_ROCM_IMAGE, DEFAULT_VULKAN_IMAGE
-from llamactl.core.runtime import Runner, _default_runner
+from llamactl.core.registry import Artifact, add_artifact, load_registry, save_registry
+from llamactl.core.runtime import Runner, _default_runner, find_runtime
 
 _BUILD_TAG_RE = re.compile(r"^b(\d+)$")
 
@@ -327,3 +330,76 @@ def build_native(
     out_dir.mkdir(parents=True, exist_ok=True)
     copier(build_dir / "bin" / "llama-server", out_dir / "llama-server")
     yield f"copied llama-server → {out_dir / 'llama-server'}"
+
+
+@dataclass(frozen=True)
+class BuildRequest:
+    ref: str       # ref spec: submodule | latest-tag | tag:.. | branch:.. | commit:..
+    target: str    # rocm-image | vulkan-image | rocm-native | vulkan-native
+
+
+def _now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def run_build(
+    request: BuildRequest,
+    repo_root: Path,
+    state_dir: Path,
+    submodule_dir: Path,
+    registry_path: Path,
+    runtime: "str | None" = None,
+    runner: Runner = _default_runner,
+    stream_runner: StreamRunner = _default_stream_runner,
+    extractor: Extractor = _default_extractor,
+    copier: Callable[[Path, Path], None] = _default_copier,
+) -> Iterator[str]:
+    """Resolve → snapshot → build → register. Yields log lines. Raises BuildError
+    on any failure (and writes no registry row). Always removes the temp context."""
+    cache_dir = state_dir / "src-cache" / "llama.cpp"
+    is_native = request.target.endswith("-native")
+
+    yield f"Resolving {request.ref}…"
+    resolved = resolve_ref(request.ref, cache_dir, submodule_dir, runner)
+    yield f"Resolved {resolved.sha[:12]} (build {resolved.build_number or 'unknown'})"
+
+    if is_native:
+        status = detect_native_toolchain(request.target)
+        if not status.ok:
+            raise BuildError(
+                f"native toolchain incomplete: missing {', '.join(status.missing)}. "
+                f"Use a container target instead."
+            )
+
+    tmp_root = state_dir / "builds" / "tmp"
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    context = Path(tempfile.mkdtemp(dir=tmp_root))
+    try:
+        yield "Exporting source snapshot…"
+        export_snapshot(request.ref, resolved, cache_dir, submodule_dir,
+                        context, stream_runner, extractor)
+
+        if is_native:
+            out_dir = state_dir / "builds" / resolved.sha / request.target
+            yield from build_native(request.target, context, out_dir, stream_runner, copier)
+            artifact = Artifact(
+                target=request.target, requested_ref=request.ref, sha=resolved.sha,
+                build_number=resolved.build_number, built_at=_now_iso(),
+                binary_path=str(out_dir / "llama-server"),
+            )
+        else:
+            rt = runtime or find_runtime()
+            if rt is None:
+                raise BuildError("no container runtime (podman/docker) found")
+            tag = image_tag_for(request.target, request.ref)
+            yield from build_image(request.target, context, tag, repo_root, rt, stream_runner)
+            artifact = Artifact(
+                target=request.target, requested_ref=request.ref, sha=resolved.sha,
+                build_number=resolved.build_number, built_at=_now_iso(),
+                image_tag=tag,
+            )
+
+        save_registry(registry_path, add_artifact(load_registry(registry_path), artifact))
+        yield f"✓ Registered {request.target} {resolved.sha[:12]}"
+    finally:
+        shutil.rmtree(context, ignore_errors=True)
