@@ -420,3 +420,72 @@ def test_is_in_use_false_when_no_server():
     art = Artifact(target="rocm-image", requested_ref="x", sha="s", build_number="",
                    built_at="t", image_tag="t:1")
     assert is_in_use(art, None) is False
+
+
+def test_image_build_context_has_llama_cpp_src_subdir(tmp_path, monkeypatch):
+    """Regression: Dockerfile.rocm/.vulkan do `COPY llama.cpp-src /llama.cpp`, so the
+    image build context must contain a `llama.cpp-src/` subdir with the source.
+    Previously export dropped the source at the context root and `COPY` failed."""
+    import llamactl.core.builds as b
+    monkeypatch.setattr(b, "resolve_ref",
+                        lambda *a, **k: ResolvedRef("sha123", "b1", "refs/tags/b1", "x"))
+    monkeypatch.setattr(b, "find_runtime", lambda: "podman")
+
+    def fake_extractor(archive_cmd, extract_cmd, dest):
+        # mimic `tar -x -C dest`: lay the source files at `dest`
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "CMakeLists.txt").write_text("x")
+
+    seen = {}
+
+    def fake_build_image(target, context_dir, image_tag, repo_root, runtime, stream_runner):
+        seen["has_src_subdir"] = (Path(context_dir) / "llama.cpp-src" / "CMakeLists.txt").is_file()
+        return iter(())
+
+    monkeypatch.setattr(b, "build_image", fake_build_image)
+
+    def fake_stream(cmd, cwd=None):
+        return iter(())
+
+    list(run_build(
+        BuildRequest("submodule", "rocm-image"),
+        repo_root=tmp_path, state_dir=tmp_path, submodule_dir=tmp_path / "sub",
+        registry_path=tmp_path / "registry.toml",
+        stream_runner=fake_stream, extractor=fake_extractor,
+    ))
+    assert seen.get("has_src_subdir"), \
+        "image build context is missing llama.cpp-src/ (the Dockerfile COPYs it)"
+
+
+def test_native_build_context_is_source_root(tmp_path, monkeypatch):
+    """Native builds cmake from the context root, so the source must sit directly
+    in the context (no llama.cpp-src/ subdir)."""
+    import llamactl.core.builds as b
+    monkeypatch.setattr(b, "resolve_ref",
+                        lambda *a, **k: ResolvedRef("sha", "", "sha", "x"))
+    monkeypatch.setattr(b, "detect_native_toolchain",
+                        lambda *a, **k: ToolchainStatus(ok=True, missing=()))
+
+    def fake_extractor(archive_cmd, extract_cmd, dest):
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "CMakeLists.txt").write_text("x")
+
+    seen = {}
+
+    def fake_build_native(target, src_dir, out_dir, stream_runner, copier):
+        seen["src_at_root"] = (Path(src_dir) / "CMakeLists.txt").is_file()
+        seen["no_subdir"] = not (Path(src_dir) / "llama.cpp-src").exists()
+        return iter(())
+
+    monkeypatch.setattr(b, "build_native", fake_build_native)
+
+    def fake_stream(cmd, cwd=None):
+        return iter(())
+
+    list(run_build(
+        BuildRequest("submodule", "rocm-native"),
+        repo_root=tmp_path, state_dir=tmp_path, submodule_dir=tmp_path / "sub",
+        registry_path=tmp_path / "registry.toml",
+        stream_runner=fake_stream, extractor=fake_extractor,
+    ))
+    assert seen.get("src_at_root") and seen.get("no_subdir")
