@@ -55,6 +55,16 @@ def test_resolve_gguf_path_rejects_unsafe_spec(spec, tmp_path):
     assert resolve_gguf_path(spec, cfg) is None
 
 
+def test_resolve_gguf_path_glob_metachar_does_not_match_planted_file(tmp_path):
+    # Non-vacuous: without validation, `*{repo}*{quant}*.gguf` with repo="re*po"
+    # expands and matches this planted file; the guard must reject it → None.
+    # (This test fails if the spec validation is removed.)
+    cfg = _global_cfg(tmp_path)
+    cfg.llama_cache.mkdir(parents=True, exist_ok=True)
+    (cfg.llama_cache / "xx_reXXpo_Q5_K_M.gguf").write_bytes(b"GGUF")
+    assert resolve_gguf_path("org/re*po:Q5_K_M", cfg) is None
+
+
 def test_resolve_finds_flattened_gguf_in_llama_cache(tmp_path):
     cfg = _global_cfg(tmp_path)
     cfg.llama_cache.mkdir(parents=True)
