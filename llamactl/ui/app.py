@@ -5,13 +5,14 @@ from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Footer, Header, Static, TabbedContent, TabPane
+from textual.widgets import Footer, Header, TabbedContent, TabPane
 
 from llamactl.core.config import GlobalConfig, ModelConfig, load_all, load_global
 from llamactl.core.registry import Artifact, load_registry
 from llamactl.ui.screens.builds import BuildsScreen
 from llamactl.ui.screens.models import ModelsScreen
 from llamactl.ui.screens.serve import ServeScreen
+from llamactl.ui.screens.test import TestScreen
 
 
 class LlamaCtlApp(App):
@@ -67,7 +68,7 @@ class LlamaCtlApp(App):
             with TabPane("Builds", id="builds"):
                 yield BuildsScreen()
             with TabPane("Test", id="test"):
-                yield Static("OOM boundary test — coming in Phase 5")
+                yield TestScreen()
         yield Footer()
 
     def action_quit(self) -> None:

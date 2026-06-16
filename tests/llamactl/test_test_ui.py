@@ -45,3 +45,41 @@ async def test_serve_shows_estimate_unavailable_when_no_gguf(tmp_path):
         await pilot.pause()
         line = form.query_one("#estimate-line", Static)
         assert "unavailable" in str(line.render()).lower()
+
+
+@pytest.mark.asyncio
+async def test_test_tab_disabled_without_server(tmp_path):
+    from llamactl.ui.app import LlamaCtlApp
+    from llamactl.ui.screens.test import TestScreen
+    from textual.widgets import Button, TabbedContent
+
+    app = LlamaCtlApp(repo_root=_repo_with_model(tmp_path))
+    async with app.run_test(headless=True) as pilot:
+        app.query_one(TabbedContent).active = "test"
+        await pilot.pause()
+        screen = app.query_one(TestScreen)
+        btn = screen.query_one("#btn-run-test", Button)
+        assert btn.disabled is True
+
+
+@pytest.mark.asyncio
+async def test_verdict_banner_renders(tmp_path):
+    from llamactl.ui.app import LlamaCtlApp
+    from llamactl.ui.screens.test import TestScreen, _Verdict
+    from llamactl.core.oomtest import OomTestResult
+    from textual.widgets import Static, TabbedContent
+
+    app = LlamaCtlApp(repo_root=_repo_with_model(tmp_path))
+    async with app.run_test(headless=True) as pilot:
+        app.query_one(TabbedContent).active = "test"
+        await pilot.pause()
+        screen = app.query_one(TestScreen)
+        screen.post_message(_Verdict(
+            OomTestResult("WARN", 11.3, 120000, None, "peak over budget")))
+        await pilot.pause()
+        verdict = screen.query_one("#verdict", Static)
+        # Use .render() rather than .renderable — consistent with the Serve
+        # tab smoke test (test_serve_shows_estimate_unavailable_when_no_gguf)
+        # which found that this Textual version exposes updated content via
+        # render() rather than .renderable in headless pilot mode.
+        assert "WARN" in str(verdict.render())
