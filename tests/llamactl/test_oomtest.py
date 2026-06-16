@@ -224,6 +224,24 @@ def test_run_phases_short_circuits_on_ramp_failure():
     assert [p.key for p in phases] == ["ramp"]
 
 
+def test_run_phases_short_circuits_on_sustained_failure():
+    specs = {
+        "ramp": _FakePhase("ramp", last_ok=100, peak=9.0),
+        "sustained": _FakePhase("sustained", success=False),
+        "cold_start": _FakePhase("cold-start"),
+        "defrag": _FakePhase("defrag"),
+        "boundary": _FakePhase("boundary"),
+    }
+    phases, _, _ = run_phases(
+        config_steps=[10],
+        phase_set=_phase_set(specs),
+        cancel=lambda: False,
+        reporter=_RecordingReporter(),
+        **_noop_collaborators(),
+    )
+    assert [p.key for p in phases] == ["ramp", "sustained"]
+
+
 def test_run_phases_stops_on_cancel():
     specs = {
         "ramp": _FakePhase("ramp", last_ok=100, peak=9.0),

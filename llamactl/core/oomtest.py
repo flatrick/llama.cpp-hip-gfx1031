@@ -9,9 +9,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from stress_harness.config import StressConfig
-from stress_harness.models import PhaseResult, RuntimeInfo, StressRunResult
+from stress_harness.models import PhaseResult, PhaseSample, RuntimeInfo, StressRunResult
 from stress_harness.monitoring import VramMonitor
 from stress_harness.phases import (
     BoundaryPhase,
@@ -165,17 +166,17 @@ def classify_verdict(
 class PhaseSet:
     """Holds the five phase constructors (or test fakes) used by run_phases."""
 
-    ramp: object = RampPhase
-    sustained: object = SustainedPhase
-    cold_start: object = ColdStartPhase
-    defrag: object = DefragPhase
-    boundary: object = BoundaryPhase
+    ramp: Callable[..., Any] = RampPhase
+    sustained: Callable[..., Any] = SustainedPhase
+    cold_start: Callable[..., Any] = ColdStartPhase
+    defrag: Callable[..., Any] = DefragPhase
+    boundary: Callable[..., Any] = BoundaryPhase
 
 
 DEFAULT_PHASES = PhaseSet()
 
 
-def _peak_from(samples: list) -> float | None:
+def _peak_from(samples: list[PhaseSample]) -> float | None:
     """Return the maximum VRAM reading across a list of PhaseSamples."""
     vals = [s.peak_vram_gb for s in samples if s.peak_vram_gb is not None]
     vals += [
@@ -244,6 +245,9 @@ def run_phases(
         if not result.success or cancel():
             return phases, (max(peaks) if peaks else None), any_reading
 
+    if cancel():
+        return phases, (max(peaks) if peaks else None), any_reading
+
     # Phase 5: Boundary
     ctx = (
         config.ctx_size_override
@@ -301,7 +305,7 @@ def run_oom_check(
     steps = config.build_steps(ctx_size)
 
     reporter.start_run(
-        _run_summary(config, ctx_size, runtime_info, vram_monitor.read())
+        _run_summary(config, ctx_size, runtime_info, vram_monitor.read(), steps)
     )
 
     phases, peak, vram_available = run_phases(
@@ -324,12 +328,13 @@ def _run_summary(
     ctx_size: int,
     runtime_info: RuntimeInfo,
     baseline: float | None,
+    steps: list[int],
 ) -> StressRunResult:
     """Build a StressRunResult for reporter.start_run."""
     return StressRunResult(
         config=config,
         ctx_size=ctx_size,
-        steps=[],
+        steps=steps,
         runtime=runtime_info,
         baseline_vram_gb=baseline,
     )
