@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from llamactl.core.config import GlobalConfig, ModelConfig
 from llamactl.core.estimate import Estimate, compute_estimate, estimate_vram, resolve_gguf_path
 
@@ -39,6 +41,18 @@ def _global_cfg(tmp_path: Path) -> GlobalConfig:
         llama_cache=tmp_path / "llama",
         hf_cache=tmp_path / "hf",
     )
+
+
+@pytest.mark.parametrize("spec", [
+    "../../etc/passwd:Q5_K_M",       # traversal in repo part
+    "org/repo:../../../q",           # traversal in quant
+    "org/re*po:Q5_K_M",              # glob metachar in repo
+])
+def test_resolve_gguf_path_rejects_unsafe_spec(spec, tmp_path):
+    cfg = _global_cfg(tmp_path)
+    cfg.llama_cache.mkdir(parents=True, exist_ok=True)
+    cfg.hf_cache.mkdir(parents=True, exist_ok=True)
+    assert resolve_gguf_path(spec, cfg) is None
 
 
 def test_resolve_finds_flattened_gguf_in_llama_cache(tmp_path):

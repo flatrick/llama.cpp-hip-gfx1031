@@ -10,6 +10,7 @@ from __future__ import annotations
 import glob
 import logging
 import os
+import re
 import struct
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,7 @@ CACHE_TYPE_BYTES: dict[str, float] = {
 }
 VRAM_OVERHEAD_GB = 0.6
 COMPUTE_BUFFER_PER_512_GB = 0.9
+_SAFE_SPEC_PART = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +190,12 @@ def resolve_gguf_path(hf_spec: str, global_cfg: GlobalConfig) -> Path | None:
         return None
     org, repo = repo_part.split("/", 1)
 
+    # Validate components before interpolating into glob/path patterns: reject
+    # path-traversal and glob metacharacters in operator-supplied `hf` specs.
+    if not all(_SAFE_SPEC_PART.match(part) for part in (org, repo, quant)):
+        _log.warning("estimate: rejecting unsafe hf spec %r", hf_spec)
+        return None
+
     # 1. llama.cpp -hf cache: flattened filenames containing repo + quant.
     #    The repo-less `*{quant}*.gguf` fallback is a last resort for caches
     #    whose filenames omit the repo; in a shared cache it can match a
@@ -196,6 +204,8 @@ def resolve_gguf_path(hf_spec: str, global_cfg: GlobalConfig) -> Path | None:
     for pattern in (f"*{repo}*{quant}*.gguf", f"*{quant}*.gguf"):
         matches = sorted(glob.glob(str(llama_cache / pattern)))
         if matches:
+            _log.debug("estimate: resolved %s via pattern %r -> %s",
+                       hf_spec, pattern, matches[-1])
             return Path(matches[-1])
 
     # 2. HF hub snapshot layout (huggingface-cli downloads). With multiple
@@ -206,6 +216,8 @@ def resolve_gguf_path(hf_spec: str, global_cfg: GlobalConfig) -> Path | None:
     pattern = str(hub / f"models--{org}--{repo}" / "snapshots" / "*" / f"*{quant}*.gguf")
     matches = sorted(glob.glob(pattern))
     if matches:
+        _log.debug("estimate: resolved %s via pattern %r -> %s",
+                   hf_spec, pattern, matches[-1])
         return Path(matches[-1])
 
     return None
