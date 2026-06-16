@@ -155,35 +155,30 @@ class _DummyCfg:
 def test_estimate_vram_none_when_kv_heads_missing(monkeypatch):
     """A GGUF whose header lacks KV-head metadata must yield None, not a
     falsely-low estimate that omits the KV-cache term."""
-    from llamactl.core import estimate as est_mod
-
     monkeypatch.setattr(
-        est_mod, "resolve_gguf_path", lambda hf, cfg: __import__("pathlib").Path("/x/m.gguf")
+        "llamactl.core.estimate.resolve_gguf_path",
+        lambda hf, cfg: Path("/x/m.gguf"),
     )
     monkeypatch.setattr(
-        est_mod, "model_params_from_gguf",
+        "llamactl.core.estimate.model_params_from_gguf",
         lambda path: {"arch": "llm", "block_count": 32, "kv_layers": 32,
                       "kv_heads": 0, "head_dim": 128, "weight_gb": 7.0},
     )
-    model = ModelConfig(id="m", name="M", hf="org/repo:Q5_K_M", settings={},
-                        backends={}, presets={}, images={}, path=Path("m.toml"))
-    result = est_mod.estimate_vram(model, {"ctx_size": 4096}, _DummyCfg())
-    assert result is None
+    model = _model("org/repo:Q5_K_M")
+    assert estimate_vram(model, {"ctx_size": 4096}, _DummyCfg()) is None
 
 
 def test_estimate_vram_none_when_head_dim_missing(monkeypatch):
     """A GGUF whose header lacks head_dim metadata must yield None, not a
     falsely-low estimate that omits the KV-cache term."""
-    from llamactl.core import estimate as est_mod
-
     monkeypatch.setattr(
-        est_mod, "resolve_gguf_path", lambda hf, cfg: __import__("pathlib").Path("/x/m.gguf")
+        "llamactl.core.estimate.resolve_gguf_path",
+        lambda hf, cfg: Path("/x/m.gguf"),
     )
     monkeypatch.setattr(
-        est_mod, "model_params_from_gguf",
+        "llamactl.core.estimate.model_params_from_gguf",
         lambda path: {"arch": "llm", "block_count": 32, "kv_layers": 32,
                       "kv_heads": 8, "head_dim": 0, "weight_gb": 7.0},
     )
-    model = ModelConfig(id="m", name="M", hf="org/repo:Q5_K_M", settings={},
-                        backends={}, presets={}, images={}, path=Path("m.toml"))
-    assert est_mod.estimate_vram(model, {"ctx_size": 4096}, _DummyCfg()) is None
+    model = _model("org/repo:Q5_K_M")
+    assert estimate_vram(model, {"ctx_size": 4096}, _DummyCfg()) is None
