@@ -5,7 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from llamactl.core.builds import BuildError, _select_latest_build_tag, image_tag_for
+from llamactl.core.builds import (
+    BuildError,
+    ResolvedRef,
+    _select_latest_build_tag,
+    image_tag_for,
+    resolve_ref,
+)
 
 
 _LS_REMOTE = "\n".join([
@@ -58,9 +64,6 @@ def test_image_tag_for_rejects_empty_sanitized_ref():
         image_tag_for("rocm-image", "@")
 
 
-from llamactl.core.builds import ResolvedRef, resolve_ref
-
-
 def _runner_returning(mapping):
     """Fake Runner: returns CompletedProcess based on a substring match in argv."""
     def run(cmd):
@@ -109,6 +112,16 @@ def test_resolve_commit_spec_trusts_sha(tmp_path):
     assert r.sha == "abc123"
     assert r.build_number == ""
     assert r.fetch_spec == "abc123"
+
+
+def test_select_latest_build_tag_prefers_peeled_commit_sha():
+    annotated = "\n".join([
+        "tagobj1111111111111111111111111111111111\trefs/tags/b500",
+        "commitcafe000000000000000000000000000000\trefs/tags/b500^{}",
+    ])
+    tag, sha = _select_latest_build_tag(annotated)
+    assert tag == "b500"
+    assert sha == "commitcafe000000000000000000000000000000"
 
 
 def test_resolve_tag_prefers_peeled_commit_sha(tmp_path):

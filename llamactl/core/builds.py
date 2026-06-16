@@ -64,7 +64,8 @@ def _select_latest_build_tag(ls_remote_output: str) -> tuple[str, str]:
         if len(parts) != 2:
             continue
         sha, ref = parts[0].strip(), parts[1].strip()
-        if ref.endswith("^{}"):
+        peeled = ref.endswith("^{}")
+        if peeled:
             ref = ref[:-3]
         if not ref.startswith("refs/tags/"):
             continue
@@ -73,7 +74,9 @@ def _select_latest_build_tag(ls_remote_output: str) -> tuple[str, str]:
         if not m:
             continue
         n = int(m.group(1))
-        if n > best_n:
+        # Prefer the peeled (^{}) line's sha: for an annotated tag it is the
+        # commit we build/checkout, not the tag object.
+        if n > best_n or (n == best_n and peeled):
             best_n, best_tag, best_sha = n, name, sha
     if not best_tag:
         raise BuildError("no build tag (b<NNNN>) found in remote tags")
@@ -125,7 +128,9 @@ def resolve_ref(
     if ref.startswith("tag:"):
         name = ref[len("tag:"):]
         res = runner(["git", "ls-remote", LLAMA_CPP_REMOTE, f"refs/tags/{name}"])
-        sha = _sha_from_ls_remote(res.stdout) if res.returncode == 0 else ""
+        if res.returncode != 0:
+            raise BuildError(f"ls-remote failed: {res.stderr}")
+        sha = _sha_from_ls_remote(res.stdout)
         if not sha:
             raise BuildError(f"tag '{name}' not found on remote")
         build_number = name if _BUILD_TAG_RE.match(name) else ""
@@ -134,7 +139,9 @@ def resolve_ref(
     if ref.startswith("branch:"):
         name = ref[len("branch:"):]
         res = runner(["git", "ls-remote", LLAMA_CPP_REMOTE, f"refs/heads/{name}"])
-        sha = _sha_from_ls_remote(res.stdout) if res.returncode == 0 else ""
+        if res.returncode != 0:
+            raise BuildError(f"ls-remote failed: {res.stderr}")
+        sha = _sha_from_ls_remote(res.stdout)
         if not sha:
             raise BuildError(f"branch '{name}' not found on remote")
         return ResolvedRef(sha, "", name, ref)
