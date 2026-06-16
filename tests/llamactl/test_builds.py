@@ -7,11 +7,14 @@ import pytest
 
 from llamactl.core.builds import (
     BuildError,
+    ROCM_CMAKE_FLAGS,
     ResolvedRef,
     StreamRunner,
     ToolchainStatus,
+    VULKAN_CMAKE_FLAGS,
     _select_latest_build_tag,
     build_image,
+    build_native,
     detect_native_toolchain,
     export_snapshot,
     image_tag_for,
@@ -257,3 +260,45 @@ def test_build_image_vulkan_uses_vulkan_dockerfile(tmp_path):
     assert "-f" in captured["cmd"]
     assert captured["cmd"][captured["cmd"].index("-f") + 1] == \
         str(tmp_path / "repo" / "Dockerfile.vulkan")
+
+
+def test_build_native_rocm_configure_compile_and_copy(tmp_path):
+    cmds = []
+
+    def stream(cmd, cwd=None):
+        cmds.append(cmd)
+        return iter(())
+
+    copied = {}
+
+    def copier(src, dst):
+        copied["src"] = src
+        copied["dst"] = dst
+
+    src = tmp_path / "ctx"
+    out = tmp_path / "out"
+    lines = list(build_native("rocm-native", src, out, stream, copier))
+
+    configure, compile_ = cmds
+    assert configure[:6] == ["cmake", "-S", str(src), "-B", str(src / "build"), "-G"]
+    assert configure[6] == "Ninja"
+    for flag in ROCM_CMAKE_FLAGS:
+        assert flag in configure
+    assert compile_[:4] == ["cmake", "--build", str(src / "build"), "--target"]
+    assert compile_[4] == "llama-server"
+    assert copied["src"] == src / "build" / "bin" / "llama-server"
+    assert copied["dst"] == out / "llama-server"
+    assert any("copied" in line for line in lines)
+
+
+def test_build_native_vulkan_uses_vulkan_flags(tmp_path):
+    cmds = []
+
+    def stream(cmd, cwd=None):
+        cmds.append(cmd)
+        return iter(())
+
+    list(build_native("vulkan-native", tmp_path / "c", tmp_path / "o",
+                      stream, lambda s, d: None))
+    assert "-DGGML_VULKAN=ON" in cmds[0]
+    assert "-DGGML_HIP=ON" not in cmds[0]

@@ -7,6 +7,7 @@ the snapshot pipe uses Extractor. core never imports UI.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -25,6 +26,22 @@ LLAMA_CPP_REMOTE = "https://github.com/ggml-org/llama.cpp.git"
 ROCM_IMAGE_PREFIX = DEFAULT_ROCM_IMAGE.split(":")[0]      # "llama-cpp-gfx1031"
 VULKAN_IMAGE_PREFIX = DEFAULT_VULKAN_IMAGE.split(":")[0]  # "llama-cpp-vulkan"
 _IMAGE_PREFIXES = {"rocm-image": ROCM_IMAGE_PREFIX, "vulkan-image": VULKAN_IMAGE_PREFIX}
+
+# cmake flags MUST mirror Dockerfile.rocm / Dockerfile.vulkan exactly.
+ROCM_CMAKE_FLAGS = [
+    "-DGGML_HIP=ON",
+    "-DAMDGPU_TARGETS=gfx1030",
+    "-DCMAKE_BUILD_TYPE=Release",
+    "-DCMAKE_PREFIX_PATH=/opt/rocm",
+    "-DLLAMA_CURL=ON",
+    "-DLLAMA_BUILD_BORINGSSL=ON",
+]
+VULKAN_CMAKE_FLAGS = [
+    "-DGGML_VULKAN=ON",
+    "-DCMAKE_BUILD_TYPE=Release",
+    "-DLLAMA_CURL=ON",
+    "-DLLAMA_BUILD_BORINGSSL=ON",
+]
 
 
 def _sanitize_tag(ref: str) -> str:
@@ -284,3 +301,29 @@ def build_image(
     cmd = [runtime, "build", "-f", str(repo_root / dockerfile),
            "-t", image_tag, str(context_dir)]
     yield from stream_runner(cmd, None)
+
+
+def _default_copier(src: Path, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+
+
+def build_native(
+    target: str,
+    src_dir: Path,
+    out_dir: Path,
+    stream_runner: StreamRunner = _default_stream_runner,
+    copier: Callable[[Path, Path], None] = _default_copier,
+) -> Iterator[str]:
+    flags = ROCM_CMAKE_FLAGS if target == "rocm-native" else VULKAN_CMAKE_FLAGS
+    build_dir = src_dir / "build"
+    jobs = str(os.cpu_count() or 1)
+    yield from stream_runner(
+        ["cmake", "-S", str(src_dir), "-B", str(build_dir), "-G", "Ninja", *flags], None,
+    )
+    yield from stream_runner(
+        ["cmake", "--build", str(build_dir), "--target", "llama-server", "-j", jobs], None,
+    )
+    out_dir.mkdir(parents=True, exist_ok=True)
+    copier(build_dir / "bin" / "llama-server", out_dir / "llama-server")
+    yield f"copied llama-server → {out_dir / 'llama-server'}"
