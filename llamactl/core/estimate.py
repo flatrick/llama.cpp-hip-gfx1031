@@ -71,20 +71,25 @@ def resolve_gguf_path(hf_spec: str, global_cfg: GlobalConfig) -> Path | None:
     Order: llama.cpp -hf cache (flattened names) → HF hub snapshot layout.
     Local-only; never raises.
     """
-    if ":" not in hf_spec or "/" not in hf_spec.split(":", 1)[0]:
+    repo_part, _, quant = hf_spec.partition(":")
+    if not quant or "/" not in repo_part:
         return None
-    repo_part, quant = hf_spec.split(":", 1)
     org, repo = repo_part.split("/", 1)
 
     # 1. llama.cpp -hf cache: flattened filenames containing repo + quant.
-    llama_cache = Path(global_cfg.llama_cache).expanduser()
+    #    The repo-less `*{quant}*.gguf` fallback is a last resort for caches
+    #    whose filenames omit the repo; in a shared cache it can match a
+    #    different model that uses the same quant.
+    llama_cache = global_cfg.llama_cache
     for pattern in (f"*{repo}*{quant}*.gguf", f"*{quant}*.gguf"):
         matches = sorted(glob.glob(str(llama_cache / pattern)))
         if matches:
             return Path(matches[-1])
 
-    # 2. HF hub snapshot layout (huggingface-cli downloads).
-    hf_cache = Path(global_cfg.hf_cache).expanduser()
+    # 2. HF hub snapshot layout (huggingface-cli downloads). With multiple
+    #    snapshots we take the lexicographically last; single-snapshot repos
+    #    (the common case) are unambiguous.
+    hf_cache = global_cfg.hf_cache
     hub = hf_cache / "hub" if (hf_cache / "hub").is_dir() else hf_cache
     pattern = str(hub / f"models--{org}--{repo}" / "snapshots" / "*" / f"*{quant}*.gguf")
     matches = sorted(glob.glob(pattern))

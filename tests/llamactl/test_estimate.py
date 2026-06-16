@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from llamactl.core.estimate import Estimate, compute_estimate
+from pathlib import Path
+
+from llamactl.core.config import GlobalConfig
+from llamactl.core.estimate import Estimate, compute_estimate, resolve_gguf_path
 
 
 def test_compute_estimate_breakdown():
@@ -31,13 +34,7 @@ def test_compute_estimate_defaults_to_f16_cache():
     assert abs(est.kv_gb - (4.0 / 1024**3)) < 1e-15
 
 
-from pathlib import Path
-
-from llamactl.core.estimate import resolve_gguf_path
-
-
-def _global_cfg(tmp_path: Path):
-    from llamactl.core.config import GlobalConfig
+def _global_cfg(tmp_path: Path) -> GlobalConfig:
     return GlobalConfig(
         llama_cache=tmp_path / "llama",
         hf_cache=tmp_path / "hf",
@@ -72,3 +69,33 @@ def test_resolve_returns_none_when_absent(tmp_path):
 def test_resolve_returns_none_on_malformed_spec(tmp_path):
     cfg = _global_cfg(tmp_path)
     assert resolve_gguf_path("no-colon-here", cfg) is None
+
+
+def test_resolve_returns_none_on_empty_quant(tmp_path):
+    # `org/repo:` (empty quant) must NOT degrade to a catch-all `*.gguf` glob.
+    cfg = _global_cfg(tmp_path)
+    cfg.llama_cache.mkdir(parents=True)
+    (cfg.llama_cache / "some_other_model-Q4_K_M.gguf").write_bytes(b"GGUF")
+    assert resolve_gguf_path("unsloth/Qwen3.5-9B-GGUF:", cfg) is None
+
+
+def test_resolve_uses_quant_only_fallback_when_repo_absent(tmp_path):
+    # Cache filename omits the repo name → only the `*{quant}*.gguf` fallback matches.
+    cfg = _global_cfg(tmp_path)
+    cfg.llama_cache.mkdir(parents=True)
+    target = cfg.llama_cache / "UD-Q5_K_XL.gguf"
+    target.write_bytes(b"GGUF")
+    got = resolve_gguf_path("unsloth/Qwen3.5-9B-GGUF:UD-Q5_K_XL", cfg)
+    assert got == target
+
+
+def test_resolve_handles_hf_hub_subdir_layout(tmp_path):
+    # Real HF cache nests models under a `hub/` subdirectory.
+    cfg = _global_cfg(tmp_path)
+    snap = (cfg.hf_cache / "hub" / "models--unsloth--Qwen3.5-9B-GGUF"
+            / "snapshots" / "abc")
+    snap.mkdir(parents=True)
+    target = snap / "Qwen3.5-9B-UD-Q5_K_XL.gguf"
+    target.write_bytes(b"GGUF")
+    got = resolve_gguf_path("unsloth/Qwen3.5-9B-GGUF:UD-Q5_K_XL", cfg)
+    assert got == target
