@@ -8,10 +8,15 @@ the snapshot pipe uses Extractor. core never imports UI.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+from pathlib import Path
 
 from llamactl.core.lifecycle import DEFAULT_ROCM_IMAGE, DEFAULT_VULKAN_IMAGE
+from llamactl.core.runtime import Runner, _default_runner
 
 _BUILD_TAG_RE = re.compile(r"^b(\d+)$")
+
+LLAMA_CPP_REMOTE = "https://github.com/ggml-org/llama.cpp.git"
 
 ROCM_IMAGE_PREFIX = DEFAULT_ROCM_IMAGE.split(":")[0]      # "llama-cpp-gfx1031"
 VULKAN_IMAGE_PREFIX = DEFAULT_VULKAN_IMAGE.split(":")[0]  # "llama-cpp-vulkan"
@@ -73,3 +78,71 @@ def _select_latest_build_tag(ls_remote_output: str) -> tuple[str, str]:
     if not best_tag:
         raise BuildError("no build tag (b<NNNN>) found in remote tags")
     return best_tag, best_sha
+
+
+@dataclass(frozen=True)
+class ResolvedRef:
+    sha: str
+    build_number: str   # "" when not a b<NNNN> tag
+    fetch_spec: str      # ref/sha to `git fetch`; "" for submodule
+    display: str
+
+
+def _sha_from_ls_remote(output: str) -> str:
+    """First field of the (preferably peeled ^{}) line; '' if none."""
+    plain = ""
+    for line in output.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 2:
+            continue
+        sha, ref = parts[0].strip(), parts[1].strip()
+        if ref.endswith("^{}"):
+            return sha
+        if not plain:
+            plain = sha
+    return plain
+
+
+def resolve_ref(
+    ref: str,
+    cache_dir: Path,
+    submodule_dir: Path,
+    runner: Runner = _default_runner,
+) -> ResolvedRef:
+    if ref == "submodule":
+        res = runner(["git", "-C", str(submodule_dir), "rev-parse", "HEAD"])
+        if res.returncode != 0:
+            raise BuildError(f"submodule rev-parse failed: {res.stderr}")
+        return ResolvedRef(res.stdout.strip(), "", "", "submodule")
+
+    if ref == "latest-tag":
+        res = runner(["git", "ls-remote", "--tags", LLAMA_CPP_REMOTE])
+        if res.returncode != 0:
+            raise BuildError(f"ls-remote failed: {res.stderr}")
+        tag, sha = _select_latest_build_tag(res.stdout)
+        return ResolvedRef(sha, tag, f"refs/tags/{tag}", f"latest-tag ({tag})")
+
+    if ref.startswith("tag:"):
+        name = ref[len("tag:"):]
+        res = runner(["git", "ls-remote", LLAMA_CPP_REMOTE, f"refs/tags/{name}"])
+        sha = _sha_from_ls_remote(res.stdout) if res.returncode == 0 else ""
+        if not sha:
+            raise BuildError(f"tag '{name}' not found on remote")
+        build_number = name if _BUILD_TAG_RE.match(name) else ""
+        return ResolvedRef(sha, build_number, f"refs/tags/{name}", ref)
+
+    if ref.startswith("branch:"):
+        name = ref[len("branch:"):]
+        res = runner(["git", "ls-remote", LLAMA_CPP_REMOTE, f"refs/heads/{name}"])
+        sha = _sha_from_ls_remote(res.stdout) if res.returncode == 0 else ""
+        if not sha:
+            raise BuildError(f"branch '{name}' not found on remote")
+        return ResolvedRef(sha, "", name, ref)
+
+    if ref.startswith("commit:"):
+        sha = ref[len("commit:"):]
+        if not sha:
+            raise BuildError("commit ref is empty")
+        return ResolvedRef(sha, "", sha, ref)
+
+    raise BuildError(f"unrecognized ref spec: {ref!r}")
