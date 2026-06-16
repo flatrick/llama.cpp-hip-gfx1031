@@ -193,7 +193,7 @@ def test_rocm_toolchain_ok_when_all_present():
     which = lambda n: f"/usr/bin/{n}"
     exists = lambda p: True
     st = detect_native_toolchain("rocm-native", which=which, path_exists=exists)
-    assert st == ToolchainStatus(ok=True, missing=[])
+    assert st == ToolchainStatus(ok=True, missing=())
 
 
 def test_rocm_toolchain_reports_missing_hipcc_and_hipblas():
@@ -211,3 +211,15 @@ def test_vulkan_toolchain_reports_missing_curl_dev():
     st = detect_native_toolchain("vulkan-native", which=which, path_exists=exists)
     assert st.ok is False
     assert "libcurl-dev" in st.missing
+
+
+def test_vulkan_toolchain_ok_when_all_present():
+    which = lambda n: f"/usr/bin/{n}"
+    exists = lambda p: True
+    st = detect_native_toolchain("vulkan-native", which=which, path_exists=exists)
+    assert st == ToolchainStatus(ok=True, missing=())
+
+
+def test_detect_native_toolchain_rejects_unknown_target():
+    with pytest.raises(BuildError, match="not a native target"):
+        detect_native_toolchain("gpu-native")

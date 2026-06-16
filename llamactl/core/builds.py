@@ -11,7 +11,7 @@ import re
 import shutil
 import subprocess
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -233,7 +233,7 @@ def export_snapshot(
 @dataclass(frozen=True)
 class ToolchainStatus:
     ok: bool
-    missing: list[str] = field(default_factory=list)
+    missing: tuple[str, ...] = ()
 
 
 def detect_native_toolchain(
@@ -269,4 +269,4 @@ def detect_native_toolchain(
     if not path_exists("/usr/include/curl/curl.h"):
         missing.append("libcurl-dev")
 
-    return ToolchainStatus(ok=not missing, missing=missing)
+    return ToolchainStatus(ok=not missing, missing=tuple(missing))
