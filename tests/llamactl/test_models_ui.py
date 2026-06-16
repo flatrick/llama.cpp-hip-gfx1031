@@ -70,3 +70,25 @@ async def test_edit_value_sets_dirty_and_save_writes(tmp_path: Path) -> None:
         assert not ms.is_dirty
         text = (tmp_path / "configs" / "models" / "m.toml").read_text()
         assert "ctx_size = 8192" in text
+
+
+@pytest.mark.asyncio
+async def test_set_button_with_blank_section_targets_top_level(tmp_path: Path) -> None:
+    from llamactl.ui.app import LlamaCtlApp
+    from llamactl.ui.screens.models import ModelsScreen
+    from textual.widgets import Button, Input
+
+    app = LlamaCtlApp(repo_root=_repo(tmp_path))
+    async with app.run_test(headless=True) as pilot:
+        app.query_one("TabbedContent").active = "models"
+        await pilot.pause()
+        ms = app.query_one(ModelsScreen)
+        ms.select_model("m")
+        await pilot.pause()
+        # Leave the section dropdown blank; set a top-level key via the BUTTON path.
+        ms.query_one("#key-input", Input).value = "name"
+        ms.query_one("#value-input", Input).value = '"Renamed"'
+        ms.on_button_pressed(Button.Pressed(ms.query_one("#btn-set", Button)))
+        await pilot.pause()
+        assert ms._doc["name"] == "Renamed"
+        assert "Select" not in ms._doc   # no spurious doc["Select"]["NULL"] table

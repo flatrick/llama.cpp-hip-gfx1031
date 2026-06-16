@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.widget import Widget
 from textual.widgets import Button, Input, Select, Static, Tree
 from textual.widgets.option_list import Option
@@ -17,6 +18,8 @@ if TYPE_CHECKING:
 
 
 class ModelsScreen(Widget):
+    BINDINGS = [Binding("ctrl+s", "save", "Save")]
+
     DEFAULT_CSS = """
     ModelsScreen { height: 1fr; layout: horizontal; }
     ModelsScreen #model-list { width: 32; border: solid $panel; }
@@ -75,6 +78,13 @@ class ModelsScreen(Widget):
         mark = " *" if dirty else ""
         title.update(f"{self._model_id or '(no model selected)'}{mark}")
         self.query_one("#btn-save", Button).disabled = not dirty
+
+    def _selected_section(self) -> str:
+        """Section string for the dropdown; blank (Select.NULL/None) -> "" (top-level)."""
+        value = self.query_one("#section-select", Select).value
+        if value is Select.NULL or value is None:
+            return ""
+        return str(value)
 
     def _section_options(self) -> list[tuple[str, str]]:
         opts = [("(top-level)", ""), ("settings", "settings"),
@@ -160,6 +170,8 @@ class ModelsScreen(Widget):
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         if event.option_list.id == "model-list" and event.option.id:
+            if self.is_dirty:
+                self.notify("Discarded unsaved changes.", severity="warning")
             self.select_model(event.option.id)
 
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
@@ -177,13 +189,13 @@ class ModelsScreen(Widget):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id
         if bid == "btn-set":
-            section = str(self.query_one("#section-select", Select).value or "")
+            section = self._selected_section()
             key = self.query_one("#key-input", Input).value.strip()
             raw = self.query_one("#value-input", Input).value.strip()
             if key:
                 self.apply_set(section, key, raw)
         elif bid == "btn-del-key":
-            section = str(self.query_one("#section-select", Select).value or "")
+            section = self._selected_section()
             key = self.query_one("#key-input", Input).value.strip()
             if key:
                 self.apply_delete(section, key)
