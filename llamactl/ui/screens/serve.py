@@ -367,7 +367,8 @@ class _LaunchForm(Widget):
         mark = "✓" if ok else "⚠"
         body = (
             f"Est: {est.total_gb:.1f} GB  "
-            f"(model {est.model_gb:.1f} + KV {est.kv_gb:.1f} + buf {est.compute_gb:.1f})  "
+            f"(model {est.model_gb:.1f} + KV {est.kv_gb:.1f} + buf {est.compute_gb:.1f} "
+            f"+ ovh {est.overhead_gb:.1f})  "
             f"— budget {budget:.0f} GB {mark}"
         )
         return body if ok else f"[red]{body}[/red]"
