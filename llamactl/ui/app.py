@@ -8,7 +8,8 @@ from textual.binding import Binding
 from textual.widgets import Footer, Header, Static, TabbedContent, TabPane
 
 from llamactl.core.config import GlobalConfig, ModelConfig, load_all, load_global
-from llamactl.core.registry import load_registry
+from llamactl.core.registry import Artifact, load_registry
+from llamactl.ui.screens.builds import BuildsScreen
 from llamactl.ui.screens.serve import ServeScreen
 
 
@@ -29,9 +30,11 @@ class LlamaCtlApp(App):
         self._global_cfg: GlobalConfig = GlobalConfig()
         self._models: list[ModelConfig] = []
         self._model_errors: dict[Path, str] = {}
-        self._artifacts: list = []  # registry type TBD, keep as list for now
+        self._artifacts: list[Artifact] = []
 
     def on_mount(self) -> None:
+        from llamactl.ui.screens.serve import ServeScreen, _LaunchForm
+
         self._global_cfg = load_global(self._config_dir / "llamactl.toml")
         self._models, self._model_errors = load_all(self._config_dir / "models")
         try:
@@ -41,6 +44,10 @@ class LlamaCtlApp(App):
         except Exception as exc:
             self._artifacts = []
             self.notify(f"Registry load failed: {exc}", severity="warning", timeout=5)
+        try:
+            self.query_one(_LaunchForm).refresh_artifact_options()
+        except Exception:
+            pass
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -50,7 +57,7 @@ class LlamaCtlApp(App):
             with TabPane("Models", id="models"):
                 yield Static("Models editor — coming in Phase 4")
             with TabPane("Builds", id="builds"):
-                yield Static("Build manager — coming in Phase 3")
+                yield BuildsScreen()
             with TabPane("Test", id="test"):
                 yield Static("OOM boundary test — coming in Phase 5")
         yield Footer()
