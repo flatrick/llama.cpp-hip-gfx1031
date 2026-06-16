@@ -46,3 +46,48 @@ def build_vram_monitor(
         return kib / 1024 ** 2 if kib > 0 else None
 
     return VramMonitor(_reader, mode)
+
+
+class NativeLogReader:
+    """Minimal stand-in for ContainerLogReader over a native server's log file."""
+
+    def __init__(self, log_path: str | None) -> None:
+        self._path = log_path
+
+    def _lines(self) -> list[str]:
+        if not self._path:
+            return []
+        try:
+            with open(self._path, encoding="utf-8", errors="replace") as fh:
+                return fh.read().splitlines()
+        except OSError:
+            return []
+
+    def line_count(self) -> int:
+        return len(self._lines())
+
+    def dump_lines(self, limit: int) -> list[str]:
+        lines = self._lines()
+        return lines[-limit:] if limit > 0 else lines
+
+    def stop(self) -> None:
+        return None
+
+
+class NativeInspector:
+    """Runtime-inspector adapter for native servers (no container)."""
+
+    def __init__(self, log_path: str | None) -> None:
+        self._log_path = log_path
+
+    def start_log_reader(self, info) -> NativeLogReader:
+        return NativeLogReader(self._log_path)
+
+    def container_running(self, info) -> bool | None:
+        return None  # native: watchdog treats None as "still running"
+
+    def container_pids(self, info) -> list[str]:
+        return []
+
+    def api_host_port(self) -> tuple[str, int] | None:
+        return None

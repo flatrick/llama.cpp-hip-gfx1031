@@ -50,3 +50,31 @@ def test_build_vram_monitor_native_no_pid_returns_none():
                         host="127.0.0.1", port=8080, started_at="", pid=None)
     mon = build_vram_monitor(server, runtime=None)
     assert mon.read() is None
+
+
+from llamactl.core.oomtest import NativeInspector, NativeLogReader
+
+
+def test_native_log_reader_tails_file(tmp_path):
+    log = tmp_path / "srv.log"
+    log.write_text("\n".join(f"line{i}" for i in range(10)) + "\n")
+    reader = NativeLogReader(str(log))
+    assert reader.line_count() == 10
+    assert reader.dump_lines(3) == ["line7", "line8", "line9"]
+    reader.stop()  # no-op, must not raise
+
+
+def test_native_log_reader_handles_missing_path():
+    reader = NativeLogReader(None)
+    assert reader.line_count() == 0
+    assert reader.dump_lines(5) == []
+    reader.stop()
+
+
+def test_native_inspector_container_running_is_none(tmp_path):
+    insp = NativeInspector(str(tmp_path / "srv.log"))
+    from stress_harness.models import RuntimeInfo
+    info = RuntimeInfo(runtime=None, container_id=None, status_message="native")
+    assert insp.container_running(info) is None
+    reader = insp.start_log_reader(info)
+    assert reader is not None
