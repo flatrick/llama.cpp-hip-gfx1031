@@ -6,7 +6,7 @@ import pytest
 
 import tomlkit
 
-from llamactl.core.config_edit import delete_key, ensure_section, is_valid_key, load_doc, parse_value, save_doc, set_value, value_to_literal
+from llamactl.core.config_edit import delete_key, duplicate_doc, ensure_section, is_valid_key, load_doc, model_id_from_name, new_model_doc, parse_value, save_doc, set_value, value_to_literal
 
 
 def test_parse_value_types():
@@ -125,3 +125,24 @@ def test_delete_key_no_crash_on_scalar_collision():
     doc = _doc('backends = 42\n')
     delete_key(doc, "backends.rocm", "x")   # must be a silent no-op, not a TypeError
     assert doc["backends"] == 42
+
+
+def test_new_model_doc_minimal_shape():
+    doc = new_model_doc("My Model", "org/m:f")
+    assert doc["name"] == "My Model"
+    assert doc["hf"] == "org/m:f"
+    assert "settings" in doc and len(doc["settings"]) == 0
+
+
+def test_duplicate_doc_is_independent_and_keeps_comments():
+    src = tomlkit.parse('name = "M"\nhf = "x"\n[settings]\n# c\na = 1\n')
+    dup = duplicate_doc(src)
+    dup["settings"]["a"] = 999
+    assert src["settings"]["a"] == 1
+    assert "# c" in tomlkit.dumps(dup)
+
+
+def test_model_id_from_name_slug():
+    assert model_id_from_name("Qwen3 8B Instruct") == "Qwen3-8B-Instruct"
+    assert model_id_from_name("a/b:c") == "a-b-c"
+    assert model_id_from_name("  ") == "model"

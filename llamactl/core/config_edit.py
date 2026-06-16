@@ -94,3 +94,22 @@ def delete_key(doc: TOMLDocument, section: str, key: str) -> None:
     table = _section_table(doc, section, create=False)
     if table is not None and key in table:
         del table[key]
+
+
+def new_model_doc(name: str, hf: str) -> TOMLDocument:
+    doc = tomlkit.document()
+    doc["name"] = name
+    doc["hf"] = hf
+    doc["settings"] = tomlkit.table()
+    return doc
+
+
+def duplicate_doc(src: TOMLDocument) -> TOMLDocument:
+    """Independent copy with comments intact (re-parse a dump of src)."""
+    return tomlkit.parse(tomlkit.dumps(src))
+
+
+def model_id_from_name(name: str) -> str:
+    """Slugify a display name into a filename stem (A-Za-z0-9._- ; '-' joins)."""
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name.strip()).strip("-")
+    return slug or "model"
