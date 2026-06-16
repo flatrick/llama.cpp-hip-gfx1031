@@ -55,6 +55,9 @@ class NativeLogReader:
         self._path = log_path
 
     def _lines(self) -> list[str]:
+        # Re-reads the file on every call. Acceptable: native log reads are a
+        # low-frequency, cold-path failure-excerpt feature, and logs are short
+        # during an OOM test (no in-memory deque needed as ContainerLogReader has).
         if not self._path:
             return []
         try:

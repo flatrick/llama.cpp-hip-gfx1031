@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from llamactl.core.lifecycle import ServerInfo
-from llamactl.core.oomtest import build_vram_monitor
+from llamactl.core.oomtest import (
+    NativeInspector,
+    NativeLogReader,
+    build_vram_monitor,
+)
 
 
 def test_build_vram_monitor_native_uses_pid(monkeypatch):
@@ -52,9 +56,6 @@ def test_build_vram_monitor_native_no_pid_returns_none():
     assert mon.read() is None
 
 
-from llamactl.core.oomtest import NativeInspector, NativeLogReader
-
-
 def test_native_log_reader_tails_file(tmp_path):
     log = tmp_path / "srv.log"
     log.write_text("\n".join(f"line{i}" for i in range(10)) + "\n")
@@ -77,4 +78,10 @@ def test_native_inspector_container_running_is_none(tmp_path):
     info = RuntimeInfo(runtime=None, container_id=None, status_message="native")
     assert insp.container_running(info) is None
     reader = insp.start_log_reader(info)
-    assert reader is not None
+    assert isinstance(reader, NativeLogReader)
+
+
+def test_native_log_reader_handles_nonexistent_file(tmp_path):
+    reader = NativeLogReader(str(tmp_path / "does-not-exist.log"))
+    assert reader.line_count() == 0
+    assert reader.dump_lines(5) == []
