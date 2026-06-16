@@ -62,6 +62,9 @@ class ModelsScreen(Widget):
                 yield Button("Set", id="btn-set")
                 yield Button("Delete key", id="btn-del-key", variant="error")
             with Widget(classes="button-row"):
+                yield Input(placeholder="new/dup name", id="new-name")
+                yield Input(placeholder="hf (for New)", id="new-hf")
+            with Widget(classes="button-row"):
                 yield Button("Save", id="btn-save", variant="success", disabled=True)
                 yield Button("New", id="btn-new")
                 yield Button("Duplicate", id="btn-dup")
@@ -214,6 +217,18 @@ class ModelsScreen(Widget):
                 self.apply_delete(section, key)
         elif bid == "btn-save":
             self.action_save()
+        elif bid == "btn-new":
+            name = self.query_one("#new-name", Input).value.strip()
+            hf = self.query_one("#new-hf", Input).value.strip()
+            if name and hf:
+                self.create_model(name, hf)
+        elif bid == "btn-dup":
+            name = self.query_one("#new-name", Input).value.strip()
+            if name:
+                self.duplicate_model(name)
+        elif bid == "btn-del-model":
+            if self._model_id:
+                self.delete_model(self._model_id)
         elif bid == "btn-resolved":
             if not self.has_class("-resolved"):
                 preset_opts = []
@@ -226,6 +241,44 @@ class ModelsScreen(Widget):
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id in ("rv-backend", "rv-preset") and self.has_class("-resolved"):
             self.render_resolved()
+
+    def create_model(self, name: str, hf: str) -> None:
+        model_id = ce.model_id_from_name(name)
+        path = self._models_dir / f"{model_id}.toml"
+        if path.exists():
+            self.notify(f"Model '{model_id}' already exists.", severity="warning")
+            return
+        ce.save_doc(path, ce.new_model_doc(name, hf))
+        self._reload_app_models()
+        self.select_model(model_id)
+
+    def duplicate_model(self, new_name: str) -> None:
+        if self._doc is None:
+            self.notify("Select a model to duplicate first.", severity="warning")
+            return
+        model_id = ce.model_id_from_name(new_name)
+        path = self._models_dir / f"{model_id}.toml"
+        if path.exists():
+            self.notify(f"Model '{model_id}' already exists.", severity="warning")
+            return
+        dup = ce.duplicate_doc(self._doc)
+        dup["name"] = new_name
+        ce.save_doc(path, dup)
+        self._reload_app_models()
+        self.select_model(model_id)
+
+    def delete_model(self, model_id: str) -> None:
+        path = self._models_dir / f"{model_id}.toml"
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        if self._model_id == model_id:
+            self._model_id = None
+            self._doc = None
+            self._rebuild_tree()
+            self._update_dirty(False)
+        self._reload_app_models()
 
     def render_resolved(self) -> None:
         backend_val = self.query_one("#rv-backend", Select).value

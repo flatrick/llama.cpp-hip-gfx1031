@@ -163,3 +163,35 @@ async def test_resolved_view_selectors_drive_backend_and_preset(tmp_path: Path) 
         text = ms.query_one("#resolved-view", Static).content
         assert "cache_type_k" in text and "q8_0" in text   # vulkan override merged
         assert "temp = 1.2" in text                          # creative preset wins over base 0.7
+
+
+@pytest.mark.asyncio
+async def test_create_duplicate_delete_model(tmp_path: Path) -> None:
+    from llamactl.ui.app import LlamaCtlApp
+    from llamactl.ui.screens.models import ModelsScreen
+
+    app = LlamaCtlApp(repo_root=_repo(tmp_path))
+    async with app.run_test(headless=True) as pilot:
+        app.query_one("TabbedContent").active = "models"
+        await pilot.pause()
+        ms = app.query_one(ModelsScreen)
+        models_dir = tmp_path / "configs" / "models"
+
+        ms.create_model("New One", "org/new:f")
+        await pilot.pause()
+        assert (models_dir / "New-One.toml").exists()
+        assert any(m.id == "New-One" for m in app._models)
+
+        # collision: must not overwrite
+        ms.create_model("New One", "org/other:f")
+        assert (models_dir / "New-One.toml").read_text().count("org/new:f") == 1
+
+        ms.select_model("m")
+        ms.duplicate_model("m copy")
+        await pilot.pause()
+        assert (models_dir / "m-copy.toml").exists()
+
+        ms.delete_model("New-One")
+        await pilot.pause()
+        assert not (models_dir / "New-One.toml").exists()
+        assert not any(m.id == "New-One" for m in app._models)
