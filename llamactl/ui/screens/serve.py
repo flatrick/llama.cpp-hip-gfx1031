@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from textual.app import ComposeResult
 from textual.css.query import NoMatches
@@ -11,7 +11,7 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Button, Label, ProgressBar, RichLog, Select, Static
 
-from llamactl.core.config import ModelConfig, resolve_settings
+from llamactl.core.config import GlobalConfig, ModelConfig, resolve_settings
 from llamactl.core.lifecycle import ServerInfo, ServerState, resolve_image
 from llamactl.core.mapper import build_server_argv
 
@@ -353,19 +353,24 @@ class _LaunchForm(Widget):
             est_line.update("")
 
     @staticmethod
-    def _format_estimate(model, settings, global_cfg) -> str:
+    def _format_estimate(
+        model: ModelConfig,
+        settings: dict[str, Any],
+        global_cfg: GlobalConfig,
+    ) -> str:
         from llamactl.core.estimate import estimate_vram
         est = estimate_vram(model, settings, global_cfg)
         if est is None:
             return "[dim]Est: unavailable — model not downloaded[/dim]"
         budget = global_cfg.vram_budget_gb
-        mark = "✓" if est.total_gb <= budget else "⚠"
+        ok = est.total_gb <= budget
+        mark = "✓" if ok else "⚠"
         body = (
             f"Est: {est.total_gb:.1f} GB  "
             f"(model {est.model_gb:.1f} + KV {est.kv_gb:.1f} + buf {est.compute_gb:.1f})  "
             f"— budget {budget:.0f} GB {mark}"
         )
-        return body if est.total_gb <= budget else f"[red]{body}[/red]"
+        return body if ok else f"[red]{body}[/red]"
 
     def get_launch_params(
         self,
