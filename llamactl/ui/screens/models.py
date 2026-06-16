@@ -183,9 +183,14 @@ class ModelsScreen(Widget):
 
     def _reload_app_models(self) -> None:
         from llamactl.core.config import load_all
+        from llamactl.ui.screens.serve import _LaunchForm
         app: LlamaCtlApp = self.app  # type: ignore[assignment]
         app._models, app._model_errors = load_all(self._models_dir)
         self._reload_model_list()
+        try:
+            self.app.query_one(_LaunchForm).refresh_model_options()
+        except Exception:
+            pass
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         if event.option_list.id == "model-list" and event.option.id:

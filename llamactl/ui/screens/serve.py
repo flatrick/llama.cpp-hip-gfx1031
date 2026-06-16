@@ -282,6 +282,17 @@ class _LaunchForm(Widget):
         ]
         sel.set_options(artifact_options)
 
+    def refresh_model_options(self) -> None:
+        """Repopulate the model select from app._models (after a Models-tab save)."""
+        app = self.app
+        self._models = getattr(app, "_models", [])
+        self._model_map = {m.id: m for m in self._models}
+        try:
+            sel = self.query_one("#model-select", Select)
+        except NoMatches:
+            return
+        sel.set_options([(m.name, m.id) for m in self._models])
+
     def _get_selected_artifact(self) -> str | None:
         try:
             sel = self.query_one("#artifact-select", Select)

@@ -217,3 +217,22 @@ async def test_import_json_creates_toml(tmp_path: Path) -> None:
         assert out.exists()
         assert 'hf = "org/legacy:f"' in out.read_text()
         assert any(m.id == "legacy" for m in app._models)
+
+
+@pytest.mark.asyncio
+async def test_new_model_appears_in_serve_picker(tmp_path: Path) -> None:
+    from llamactl.ui.app import LlamaCtlApp
+    from llamactl.ui.screens.models import ModelsScreen
+    from llamactl.ui.screens.serve import _LaunchForm
+    from textual.widgets import Select
+
+    app = LlamaCtlApp(repo_root=_repo(tmp_path))
+    async with app.run_test(headless=True) as pilot:
+        app.query_one("TabbedContent").active = "models"
+        await pilot.pause()
+        ms = app.query_one(ModelsScreen)
+        ms.create_model("Fresh Model", "org/fresh:f")
+        await pilot.pause()
+        form = app.query_one(_LaunchForm)
+        values = [v for _label, v in form.query_one("#model-select", Select)._options]
+        assert "Fresh-Model" in values
