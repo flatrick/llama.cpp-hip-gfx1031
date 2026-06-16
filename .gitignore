@@ -1,5 +1,48 @@
 # Runtime logs
 logfile
 *.log
-__pycache__/
 state/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Python packaging
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Test & coverage
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+
+# Tool caches
+.mypy_cache/
+.pytype/
+.ruff_cache/
+.pytest_cache/
+
+# opencode — generated lock file
+.opencode/package-lock.json
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Editor artifacts
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS metadata
+.DS_Store
+Thumbs.db
