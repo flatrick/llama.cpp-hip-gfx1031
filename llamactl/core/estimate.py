@@ -8,6 +8,7 @@ unavailable") when the GGUF is not on disk; never blocks launch.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 # Calibrated constants (ported from vram_calc.py).
 CACHE_TYPE_BYTES: dict[str, float] = {
@@ -29,13 +30,15 @@ class Estimate:
 
 def compute_estimate(
     *,
-    params: dict,
+    params: dict[str, Any],
     ctx_size: int,
     cache_type_k: str | None,
     cache_type_v: str | None,
     batch_size: int,
 ) -> Estimate:
     """Pure VRAM math from GGUF params + resolved settings. Units are GiB."""
+    # Unknown/None cache types fall back to f16 (2.0 B) — a conservative
+    # upper-bound default for cache types not yet in CACHE_TYPE_BYTES.
     k_bytes = CACHE_TYPE_BYTES.get(cache_type_k or "f16", 2.0)
     v_bytes = CACHE_TYPE_BYTES.get(cache_type_v or "f16", 2.0)
     model_gb = float(params["weight_gb"])
