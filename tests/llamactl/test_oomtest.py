@@ -8,7 +8,7 @@ from llamactl.core.oomtest import (
     build_vram_monitor,
     classify_verdict,
 )
-from stress_harness.models import PhaseResult, PhaseSample
+from stress_harness.models import PhaseResult
 
 
 def test_build_vram_monitor_native_uses_pid(monkeypatch):
@@ -105,9 +105,13 @@ def test_classify_ok_when_under_budget():
 
 
 def test_classify_warn_when_at_or_over_budget():
-    res = classify_verdict([_phase("ramp")], peak_vram_gb=11.2, budget_gb=11.0,
-                           vram_available=True)
-    assert res.verdict == "WARN"
+    over = classify_verdict([_phase("ramp")], peak_vram_gb=11.2, budget_gb=11.0,
+                            vram_available=True)
+    assert over.verdict == "WARN"
+    # exact-budget boundary is also WARN (>= budget)
+    at = classify_verdict([_phase("ramp")], peak_vram_gb=11.0, budget_gb=11.0,
+                          vram_available=True)
+    assert at.verdict == "WARN"
 
 
 def test_classify_fail_on_phase_failure():
