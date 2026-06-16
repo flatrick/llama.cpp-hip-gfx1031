@@ -8,7 +8,9 @@ import pytest
 from llamactl.core.builds import (
     BuildError,
     ResolvedRef,
+    StreamRunner,
     _select_latest_build_tag,
+    export_snapshot,
     image_tag_for,
     resolve_ref,
 )
@@ -130,3 +132,56 @@ def test_resolve_tag_prefers_peeled_commit_sha(tmp_path):
     runner = _runner_returning({"ls-remote": ls})
     r = resolve_ref("tag:b500", tmp_path / "cache", tmp_path / "sub", runner)
     assert r.sha == "commitsha"
+
+
+def _ok_stream(*_a, **_kw):
+    """StreamRunner fake that yields nothing and succeeds."""
+    if False:
+        yield ""  # make it a generator
+    return
+
+
+def test_export_submodule_archives_from_submodule_no_fetch(tmp_path):
+    calls = {"fetch": 0, "archive": None, "extract": None}
+
+    def stream(cmd, cwd=None):
+        if "fetch" in cmd:
+            calls["fetch"] += 1
+        return iter(())
+
+    def extractor(archive_cmd, extract_cmd, dest):
+        calls["archive"] = archive_cmd
+        calls["extract"] = extract_cmd
+
+    resolved = ResolvedRef("deadbeef", "", "", "submodule")
+    export_snapshot("submodule", resolved, tmp_path / "cache", tmp_path / "sub",
+                    tmp_path / "ctx", stream, extractor)
+
+    assert calls["fetch"] == 0
+    assert calls["archive"] == ["git", "-C", str(tmp_path / "sub"),
+                                "archive", "--format=tar", "deadbeef"]
+    assert calls["extract"] == ["tar", "-x", "-C", str(tmp_path / "ctx")]
+
+
+def test_export_remote_ref_fetches_then_archives_from_cache(tmp_path):
+    (tmp_path / "cache" / ".git").mkdir(parents=True)  # cache already cloned
+    fetched = []
+
+    def stream(cmd, cwd=None):
+        if "fetch" in cmd:
+            fetched.append(cmd)
+        return iter(())
+
+    archive_holder = {}
+
+    def extractor(archive_cmd, extract_cmd, dest):
+        archive_holder["cmd"] = archive_cmd
+
+    resolved = ResolvedRef("aaa", "b10", "refs/tags/b10", "latest-tag (b10)")
+    export_snapshot("latest-tag", resolved, tmp_path / "cache", tmp_path / "sub",
+                    tmp_path / "ctx", stream, extractor)
+
+    assert fetched == [["git", "-C", str(tmp_path / "cache"), "fetch",
+                        "--depth", "1", "origin", "refs/tags/b10"]]
+    assert archive_holder["cmd"] == ["git", "-C", str(tmp_path / "cache"),
+                                     "archive", "--format=tar", "aaa"]

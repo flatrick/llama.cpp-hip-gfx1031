@@ -8,8 +8,11 @@ the snapshot pipe uses Extractor. core never imports UI.
 from __future__ import annotations
 
 import re
+import subprocess
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from llamactl.core.lifecycle import DEFAULT_ROCM_IMAGE, DEFAULT_VULKAN_IMAGE
 from llamactl.core.runtime import Runner, _default_runner
@@ -153,3 +156,69 @@ def resolve_ref(
         return ResolvedRef(sha, "", sha, ref)
 
     raise BuildError(f"unrecognized ref spec: {ref!r}")
+
+
+# StreamRunner: long commands. Yields stdout lines; raises BuildError on nonzero exit.
+StreamRunner = Callable[[list[str], "Path | None"], Iterator[str]]
+# Extractor: runs archive_cmd | extract_cmd into dest.
+Extractor = Callable[[list[str], list[str], Path], None]
+
+
+def _default_stream_runner(cmd: list[str], cwd: "Path | None" = None) -> Iterator[str]:
+    proc = subprocess.Popen(
+        cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1,
+    )
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        yield line.rstrip("\n")
+    proc.wait()
+    if proc.returncode != 0:
+        raise BuildError(f"command failed (exit {proc.returncode}): {' '.join(cmd)}")
+
+
+def _default_extractor(archive_cmd: list[str], extract_cmd: list[str], dest: Path) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    p1 = subprocess.Popen(archive_cmd, stdout=subprocess.PIPE)
+    p2 = subprocess.Popen(extract_cmd, stdin=p1.stdout)
+    if p1.stdout is not None:
+        p1.stdout.close()  # allow p1 to receive SIGPIPE if p2 exits
+    p2.communicate()
+    p1.wait()
+    if p1.returncode != 0 or p2.returncode != 0:
+        raise BuildError("git archive | tar extraction failed")
+
+
+def _ensure_cache(cache_dir: Path, stream_runner: StreamRunner) -> None:
+    if (cache_dir / ".git").exists():
+        return
+    cache_dir.parent.mkdir(parents=True, exist_ok=True)
+    cmd = ["git", "clone", "--filter=blob:none", "--no-checkout",
+           LLAMA_CPP_REMOTE, str(cache_dir)]
+    for _ in stream_runner(cmd, None):
+        pass
+
+
+def export_snapshot(
+    ref_spec: str,
+    resolved: ResolvedRef,
+    cache_dir: Path,
+    submodule_dir: Path,
+    dest: Path,
+    stream_runner: StreamRunner = _default_stream_runner,
+    extractor: Extractor = _default_extractor,
+) -> None:
+    if ref_spec == "submodule":
+        src = submodule_dir
+    else:
+        _ensure_cache(cache_dir, stream_runner)
+        for _ in stream_runner(
+            ["git", "-C", str(cache_dir), "fetch", "--depth", "1",
+             "origin", resolved.fetch_spec], None,
+        ):
+            pass
+        src = cache_dir
+    archive_cmd = ["git", "-C", str(src), "archive", "--format=tar", resolved.sha]
+    extract_cmd = ["tar", "-x", "-C", str(dest)]
+    dest.mkdir(parents=True, exist_ok=True)
+    extractor(archive_cmd, extract_cmd, dest)
