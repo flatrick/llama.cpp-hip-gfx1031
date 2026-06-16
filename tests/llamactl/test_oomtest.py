@@ -5,10 +5,13 @@ from llamactl.core.oomtest import (
     NativeInspector,
     NativeLogReader,
     OomTestResult,
+    PhaseSet,
     build_vram_monitor,
     classify_verdict,
+    run_phases,
 )
-from stress_harness.models import PhaseResult
+from stress_harness.models import PhaseSample, PhaseResult, RuntimeInfo
+from stress_harness.monitoring import VramMonitor
 
 
 def test_build_vram_monitor_native_uses_pid(monkeypatch):
@@ -129,3 +132,111 @@ def test_classify_degraded_when_vram_unavailable():
                            vram_available=False)
     assert res.verdict == "OK (degraded)"
     assert res.peak_vram_gb is None
+
+
+class _FakePhase:
+    """Returns a canned PhaseResult; records that it ran and with what arg."""
+
+    def __init__(self, key, success=True, last_ok=None, peak=None):
+        self._key, self._success, self._last_ok, self._peak = key, success, last_ok, peak
+
+    def make(self, *_args, **_kw):
+        phase = self
+
+        class _Runner:
+            def run(self, _arg):
+                samples = (
+                    [PhaseSample(label="s", peak_vram_gb=phase._peak)]
+                    if phase._peak is not None
+                    else []
+                )
+                return _phase(
+                    phase._key,
+                    success=phase._success,
+                    samples=samples,
+                    last_ok=phase._last_ok,
+                )
+
+        return _Runner()
+
+
+def _phase_set(specs):
+    return PhaseSet(**{k: v.make for k, v in specs.items()})
+
+
+def _noop_collaborators():
+    mon = VramMonitor(lambda: 9.0, "test")
+    return dict(
+        client=object(),
+        prompt_builder=object(),
+        vram_monitor=mon,
+        runtime_inspector=object(),
+        runtime_info=RuntimeInfo(None, None, "x"),
+    )
+
+
+class _RecordingReporter:
+    def start_run(self, r): ...
+    def start_phase(self, p): ...
+    def record_sample(self, k, s, w): ...
+    def finish_phase(self, p): ...
+    def finish_run(self, r): ...
+    def error(self, m): ...
+
+
+def test_run_phases_runs_full_chain_when_all_pass():
+    specs = {
+        "ramp": _FakePhase("ramp", last_ok=100, peak=9.0),
+        "sustained": _FakePhase("sustained", peak=9.5),
+        "cold_start": _FakePhase("cold-start", peak=10.0),
+        "defrag": _FakePhase("defrag", peak=9.8),
+        "boundary": _FakePhase("boundary", peak=9.0),
+    }
+    phases, peak, vram_available = run_phases(
+        config_steps=[10, 20],
+        phase_set=_phase_set(specs),
+        cancel=lambda: False,
+        reporter=_RecordingReporter(),
+        **_noop_collaborators(),
+    )
+    assert [p.key for p in phases] == [
+        "ramp", "sustained", "cold-start", "defrag", "boundary"
+    ]
+    assert peak == 10.0
+    assert vram_available is True
+
+
+def test_run_phases_short_circuits_on_ramp_failure():
+    specs = {
+        "ramp": _FakePhase("ramp", success=False),
+        "sustained": _FakePhase("sustained"),
+        "cold_start": _FakePhase("cold-start"),
+        "defrag": _FakePhase("defrag"),
+        "boundary": _FakePhase("boundary"),
+    }
+    phases, _, _ = run_phases(
+        config_steps=[10],
+        phase_set=_phase_set(specs),
+        cancel=lambda: False,
+        reporter=_RecordingReporter(),
+        **_noop_collaborators(),
+    )
+    assert [p.key for p in phases] == ["ramp"]
+
+
+def test_run_phases_stops_on_cancel():
+    specs = {
+        "ramp": _FakePhase("ramp", last_ok=100, peak=9.0),
+        "sustained": _FakePhase("sustained"),
+        "cold_start": _FakePhase("cold-start"),
+        "defrag": _FakePhase("defrag"),
+        "boundary": _FakePhase("boundary"),
+    }
+    phases, _, _ = run_phases(
+        config_steps=[10],
+        phase_set=_phase_set(specs),
+        cancel=lambda: True,
+        reporter=_RecordingReporter(),
+        **_noop_collaborators(),
+    )
+    assert [p.key for p in phases] == ["ramp"]  # cancelled after first
