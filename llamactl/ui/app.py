@@ -34,6 +34,7 @@ class LlamaCtlApp(App):
         self._artifacts: list[Artifact] = []
 
     def on_mount(self) -> None:
+        from llamactl.ui.screens.builds import BuildsScreen
         from llamactl.ui.screens.serve import ServeScreen, _LaunchForm
 
         self._global_cfg = load_global(self._config_dir / "llamactl.toml")
@@ -47,6 +48,12 @@ class LlamaCtlApp(App):
             self.notify(f"Registry load failed: {exc}", severity="warning", timeout=5)
         try:
             self.query_one(_LaunchForm).refresh_artifact_options()
+        except Exception:
+            pass
+        # The Builds table is built in BuildsScreen.on_mount, which runs before
+        # this method loads the registry — re-render it now that _artifacts exist.
+        try:
+            self.query_one(BuildsScreen)._refresh_table()
         except Exception:
             pass
 
