@@ -11,6 +11,7 @@ from llamactl.core.builds import (
     StreamRunner,
     ToolchainStatus,
     _select_latest_build_tag,
+    build_image,
     detect_native_toolchain,
     export_snapshot,
     image_tag_for,
@@ -223,3 +224,36 @@ def test_vulkan_toolchain_ok_when_all_present():
 def test_detect_native_toolchain_rejects_unknown_target():
     with pytest.raises(BuildError, match="not a native target"):
         detect_native_toolchain("gpu-native")
+
+
+def test_build_image_rocm_argv_and_streams(tmp_path):
+    captured = {}
+
+    def stream(cmd, cwd=None):
+        captured["cmd"] = cmd
+        yield "Step 1/5"
+        yield "Successfully tagged"
+
+    lines = list(build_image(
+        "rocm-image", tmp_path / "ctx", "llama-cpp-gfx1031:b10",
+        tmp_path / "repo", "podman", stream,
+    ))
+    assert captured["cmd"] == [
+        "podman", "build", "-f", str(tmp_path / "repo" / "Dockerfile.rocm"),
+        "-t", "llama-cpp-gfx1031:b10", str(tmp_path / "ctx"),
+    ]
+    assert lines == ["Step 1/5", "Successfully tagged"]
+
+
+def test_build_image_vulkan_uses_vulkan_dockerfile(tmp_path):
+    captured = {}
+
+    def stream(cmd, cwd=None):
+        captured["cmd"] = cmd
+        return iter(())
+
+    list(build_image("vulkan-image", tmp_path / "ctx", "llama-cpp-vulkan:b10",
+                     tmp_path / "repo", "podman", stream))
+    assert "-f" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("-f") + 1] == \
+        str(tmp_path / "repo" / "Dockerfile.vulkan")

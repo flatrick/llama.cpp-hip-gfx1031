@@ -270,3 +270,17 @@ def detect_native_toolchain(
         missing.append("libcurl-dev")
 
     return ToolchainStatus(ok=not missing, missing=tuple(missing))
+
+
+def build_image(
+    target: str,
+    context_dir: Path,
+    image_tag: str,
+    repo_root: Path,
+    runtime: str,
+    stream_runner: StreamRunner = _default_stream_runner,
+) -> Iterator[str]:
+    dockerfile = "Dockerfile.rocm" if target == "rocm-image" else "Dockerfile.vulkan"
+    cmd = [runtime, "build", "-f", str(repo_root / dockerfile),
+           "-t", image_tag, str(context_dir)]
+    yield from stream_runner(cmd, None)
