@@ -86,8 +86,8 @@ def model_params_from_gguf(path: str) -> dict[str, Any]:
     Extract the parameters we need for VRAM calculation from a GGUF file.
 
     Returns dict with keys:
-      arch, block_count, kv_layer_count, kv_heads, head_dim, weight_gb
-    kv_layer_count may differ from block_count for hybrid SSM/attention models.
+      arch, block_count, kv_layers, kv_heads, head_dim, weight_gb
+    kv_layers may differ from block_count for hybrid SSM/attention models.
     """
     meta = read_gguf_metadata(path)
     arch = meta.get("general.architecture", "llm")
