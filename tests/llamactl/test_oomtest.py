@@ -43,3 +43,10 @@ def test_build_vram_monitor_returns_none_when_no_pid(monkeypatch):
     mon = build_vram_monitor(server, runtime="podman",
                              get_pid=lambda *a, **k: None)
     assert mon.read() is None
+
+
+def test_build_vram_monitor_native_no_pid_returns_none():
+    server = ServerInfo(model_id="m", backend="rocm", preset="", mode="native",
+                        host="127.0.0.1", port=8080, started_at="", pid=None)
+    mon = build_vram_monitor(server, runtime=None)
+    assert mon.read() is None
