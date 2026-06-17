@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import threading
 
+from rich.markup import escape
 from textual import on
 from textual.app import ComposeResult
 from textual.css.query import NoMatches
@@ -240,7 +241,7 @@ class TestScreen(Widget):
             colour = "red"
         try:
             self.query_one("#verdict", Static).update(
-                f"[{colour} bold]{result.verdict}[/{colour} bold]  {result.detail}"
+                f"[{colour} bold]{result.verdict}[/{colour} bold]  {escape(result.detail)}"
             )
         except NoMatches:
             pass

@@ -120,3 +120,30 @@ async def test_unmount_sets_cancel_signal(tmp_path):
         screen._running = True
         screen.on_unmount()
         assert screen._cancel_evt.is_set()
+
+
+@pytest.mark.asyncio
+async def test_verdict_detail_markup_is_escaped(tmp_path):
+    """Log-excerpt detail containing Textual markup tags must render literally,
+    not be parsed as markup (which would silently strip the tags from the
+    visible message). Non-vacuous: fails if result.detail is not escaped."""
+    from llamactl.ui.app import LlamaCtlApp
+    from llamactl.ui.screens.test import TestScreen, _Verdict
+    from llamactl.core.oomtest import OomTestResult
+    from textual.widgets import Static, TabbedContent
+
+    app = LlamaCtlApp(repo_root=_repo_with_model(tmp_path))
+    async with app.run_test(headless=True) as pilot:
+        app.query_one(TabbedContent).active = "test"
+        await pilot.pause()
+        screen = app.query_one(TestScreen)
+        # A log excerpt that happens to contain valid Textual markup tokens.
+        screen.post_message(_Verdict(
+            OomTestResult("FAIL", None, None, "ramp",
+                          "load error [bold]oom[/] at [red]layer 9")))
+        await pilot.pause()
+        plain = screen.query_one("#verdict", Static).render().plain
+        # Without escaping, "[bold]"/"[/]"/"[red]" are consumed as markup and
+        # vanish from the plain text; with escaping they survive literally.
+        assert "[bold]" in plain
+        assert "[red]" in plain
