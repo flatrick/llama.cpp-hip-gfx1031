@@ -225,6 +225,7 @@ def run_phases(
     runtime_inspector: Any,
     runtime_info: RuntimeInfo,
     config: StressConfig | None = None,
+    ctx_size: int | None = None,
 ) -> tuple[list[PhaseResult], float | None, bool]:
     """Run ramp → sustained → cold-start → defrag → boundary.
 
@@ -275,11 +276,14 @@ def run_phases(
         if not result.success or cancel():
             return _result()
 
-    # Phase 5: Boundary
+    # Phase 5: Boundary — must oversize against the REAL context window. Prefer an
+    # explicit override, then the server-detected ctx_size; fall back to last_ok
+    # only when ctx_size is unknown. (Using last_ok ~0.95*ctx never exceeds a large
+    # context, so the server accepts the prompt and boundary spuriously fails.)
     ctx = (
         config.ctx_size_override
         if (config and config.ctx_size_override)
-        else last_ok
+        else (ctx_size if ctx_size else last_ok)
     )
     boundary = phase_set.boundary(**kw).run(ctx)
     _track(boundary)
@@ -350,6 +354,7 @@ def run_oom_check(
         runtime_inspector=inspector,
         runtime_info=runtime_info,
         config=config,
+        ctx_size=ctx_size,
     )
     if cancel():
         return OomTestResult(

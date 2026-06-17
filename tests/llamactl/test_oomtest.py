@@ -225,6 +225,38 @@ def test_run_phases_runs_full_chain_when_all_pass():
     assert vram_available is True
 
 
+def test_run_phases_boundary_uses_ctx_size_not_last_ok():
+    """The boundary phase must oversize against the real ctx_size, not the ramp's
+    last_ok (~0.95*ctx). Using last_ok means the prompt never exceeds a large
+    context, so the server accepts it and boundary spuriously 'fails'."""
+    captured = {}
+
+    class _BoundarySpy:
+        def make(self, *_a, **_kw):
+            class _Runner:
+                def run(self, arg):
+                    captured["ctx"] = arg
+                    return _phase("boundary", success=True, samples=[], last_ok=None)
+            return _Runner()
+
+    specs = {
+        "ramp": _FakePhase("ramp", last_ok=1000, peak=9.0),
+        "sustained": _FakePhase("sustained", peak=9.0),
+        "cold_start": _FakePhase("cold-start", peak=9.0),
+        "defrag": _FakePhase("defrag", peak=9.0),
+        "boundary": _BoundarySpy(),
+    }
+    run_phases(
+        config_steps=[10],
+        phase_set=_phase_set(specs),
+        cancel=lambda: False,
+        reporter=_RecordingReporter(),
+        ctx_size=65536,
+        **_noop_collaborators(),
+    )
+    assert captured["ctx"] == 65536  # real ctx_size, not last_ok (1000)
+
+
 def test_run_phases_short_circuits_on_ramp_failure():
     specs = {
         "ramp": _FakePhase("ramp", success=False),
