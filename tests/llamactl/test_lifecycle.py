@@ -93,9 +93,26 @@ def test_resolve_image_override_wins_over_model_image():
 
 # ── launch_container ──────────────────────────────────────────────────────────
 
+def _launch_runner(captured: list[list[str]], *, existing: str | None = None):
+    """Runner that records commands.
+
+    `existing` is the state reported by `inspect` (None → no such container).
+    `run` always succeeds.
+    """
+    def runner(cmd):
+        captured.append(cmd)
+        if len(cmd) > 1 and cmd[1] == "inspect":
+            return _ok(f"{existing}\n") if existing is not None else _err("No such object")
+        return _ok("abc123\n")
+    return runner
+
+
+def _run_cmd(captured: list[list[str]]) -> list[str]:
+    return next(c for c in captured if len(c) > 1 and c[1] == "run")
+
+
 def test_launch_container_rocm_device_flags(tmp_path):
     captured: list[list[str]] = []
-    runner = lambda cmd: (captured.append(cmd), _ok("abc123\n"))[1]
 
     launch_container(
         runtime="/usr/bin/podman",
@@ -105,10 +122,10 @@ def test_launch_container_rocm_device_flags(tmp_path):
         backend="rocm",
         preset="",
         image=DEFAULT_ROCM_IMAGE,
-        runner=runner,
+        runner=_launch_runner(captured),
     )
 
-    flat = " ".join(captured[0])
+    flat = " ".join(_run_cmd(captured))
     assert "/dev/kfd" in flat
     assert "video" in flat
     assert "render" in flat
@@ -116,7 +133,6 @@ def test_launch_container_rocm_device_flags(tmp_path):
 
 def test_launch_container_includes_labels(tmp_path):
     captured: list[list[str]] = []
-    runner = lambda cmd: (captured.append(cmd), _ok("abc123\n"))[1]
 
     launch_container(
         runtime="/usr/bin/podman",
@@ -126,14 +142,57 @@ def test_launch_container_includes_labels(tmp_path):
         backend="rocm",
         preset="thinking",
         image=DEFAULT_ROCM_IMAGE,
-        runner=runner,
+        runner=_launch_runner(captured),
     )
 
-    flat = " ".join(captured[0])
+    flat = " ".join(_run_cmd(captured))
     assert "llamactl.managed=1" in flat
     assert "llamactl.model=qwen3-9b" in flat
     assert "llamactl.backend=rocm" in flat
     assert "llamactl.preset=thinking" in flat
+
+
+def test_launch_container_removes_stale_container_before_recreating(tmp_path):
+    # A leftover (exited/created) container with the same name must be removed,
+    # then recreated — not collide on `docker run --name`.
+    captured: list[list[str]] = []
+
+    launch_container(
+        runtime="/usr/bin/podman",
+        global_cfg=_global_cfg(name_prefix="llamactl"),
+        model=_model(id="qwen3-9b"),
+        resolved_settings={"ctx_size": 4096},
+        backend="rocm",
+        preset="",
+        image=DEFAULT_ROCM_IMAGE,
+        runner=_launch_runner(captured, existing="exited"),
+    )
+
+    verbs = [c[1] for c in captured if len(c) > 1]
+    assert verbs == ["inspect", "rm", "run"]
+    rm_cmd = next(c for c in captured if c[1] == "rm")
+    assert "llamactl-qwen3-9b" in rm_cmd
+
+
+def test_launch_container_raises_if_already_running(tmp_path):
+    # If a container with this name is already running, don't kill it or
+    # duplicate it — surface a clear error instead.
+    captured: list[list[str]] = []
+    with pytest.raises(RuntimeError, match="already running"):
+        launch_container(
+            runtime="/usr/bin/podman",
+            global_cfg=_global_cfg(),
+            model=_model(id="qwen3-9b"),
+            resolved_settings={"ctx_size": 4096},
+            backend="rocm",
+            preset="",
+            image=DEFAULT_ROCM_IMAGE,
+            runner=_launch_runner(captured, existing="running"),
+        )
+    # Must not have issued run/rm.
+    verbs = [c[1] for c in captured if len(c) > 1]
+    assert "run" not in verbs
+    assert "rm" not in verbs
 
 
 def test_launch_container_raises_on_nonzero_exit(tmp_path):
@@ -153,7 +212,6 @@ def test_launch_container_raises_on_nonzero_exit(tmp_path):
 
 def test_launch_container_vulkan_calls_dri_passthrough(tmp_path):
     captured: list[list[str]] = []
-    runner = lambda cmd: (captured.append(cmd), _ok("abc123\n"))[1]
     fake_dri = lambda: (["--device", "/dev/dri/renderD128:/dev/dri/renderD128"], ["--group-add", "44"])
 
     launch_container(
@@ -164,11 +222,11 @@ def test_launch_container_vulkan_calls_dri_passthrough(tmp_path):
         backend="vulkan",
         preset="",
         image=DEFAULT_VULKAN_IMAGE,
-        runner=runner,
+        runner=_launch_runner(captured),
         dri_flags_fn=fake_dri,
     )
 
-    flat = " ".join(captured[0])
+    flat = " ".join(_run_cmd(captured))
     assert "/dev/dri/renderD128" in flat
     assert "44" in flat
 

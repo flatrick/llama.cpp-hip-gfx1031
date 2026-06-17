@@ -35,6 +35,24 @@ def find_runtime() -> str | None:
     return shutil.which("podman") or shutil.which("docker") or None
 
 
+def _normalize_labels(raw: object) -> dict[str, str]:
+    """Normalize a container's Labels field to a dict.
+
+    Podman emits Labels as a JSON object; Docker emits a "k=v,k=v" string.
+    Returns {} for missing or unrecognized values.
+    """
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw:
+        labels: dict[str, str] = {}
+        for pair in raw.split(","):
+            key, sep, value = pair.partition("=")
+            if sep:
+                labels[key.strip()] = value.strip()
+        return labels
+    return {}
+
+
 def list_managed(
     runtime: str,
     name_prefix: str,
@@ -92,7 +110,7 @@ def list_managed(
         if not name.startswith(name_prefix):
             continue
 
-        labels = item.get("Labels") or {}
+        labels = _normalize_labels(item.get("Labels"))
         state = item.get("State", "")
 
         containers.append(
@@ -133,6 +151,21 @@ def get_container_pid(
         return pid if pid > 0 else None
     except ValueError:
         return None
+
+
+def container_state(
+    runtime: str,
+    name: str,
+    runner: Runner = _default_runner,
+) -> str | None:
+    """Return the container's status ('running', 'exited', 'created', …) by name.
+
+    Returns None when no container with that name exists (inspect exits non-zero).
+    """
+    result = runner([runtime, "inspect", "--format", "{{.State.Status}}", name])
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
 
 
 def dri_passthrough_flags(

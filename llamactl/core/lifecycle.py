@@ -21,6 +21,7 @@ from llamactl.core.mapper import build_server_argv
 from llamactl.core.runtime import (
     Runner,
     _default_runner,
+    container_state,
     container_stop,
     dri_passthrough_flags,
     find_runtime,
@@ -139,6 +140,19 @@ def launch_container(
     """
     container_name = f"{global_cfg.name_prefix}-{model.id}"
     port = global_cfg.port
+
+    # The container name is derived only from model.id, so re-launching the same
+    # model (even with a different backend/preset) reuses the name. Handle a
+    # pre-existing container so `docker run --name` doesn't fail on a conflict:
+    #   - running        → don't kill or duplicate it; surface a clear error.
+    #   - exited/created → remove it, then recreate with the CURRENT settings.
+    existing = container_state(runtime, container_name, runner)
+    if existing == "running":
+        raise RuntimeError(
+            f"Container '{container_name}' is already running. Stop it before launching again."
+        )
+    if existing is not None:
+        runner([runtime, "rm", "-f", container_name])
 
     cmd = [
         runtime, "run", "-d",

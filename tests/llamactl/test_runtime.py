@@ -8,6 +8,7 @@ import pytest
 from llamactl.core.runtime import (
     ContainerInfo,
     container_logs_cmd,
+    container_state,
     container_stop,
     dri_passthrough_flags,
     find_runtime,
@@ -68,6 +69,52 @@ def test_list_managed_parses_podman_json():
     assert c.model_id == "qwen3.5-9b"
     assert c.backend == "rocm"
     assert c.preset == "thinking-budgeted"
+
+
+# Docker emits newline-delimited JSON with Labels as a "k=v,k=v" string,
+# whereas Podman emits a JSON array with Labels as an object.
+DOCKER_JSON = (
+    '{"Names":"llamactl-gemma-4-12b-it","State":"created",'
+    '"Labels":"llamactl.backend=rocm,llamactl.managed=1,'
+    'llamactl.model=gemma-4-12b-it,llamactl.preset=thinking-budgeted"}'
+)
+
+
+def test_list_managed_parses_docker_json_with_string_labels():
+    result = list_managed("/usr/bin/docker", "llamactl", runner=lambda _: _ok(DOCKER_JSON))
+    assert len(result) == 1
+    c = result[0]
+    assert c.name == "llamactl-gemma-4-12b-it"
+    assert c.state == "created"
+    assert c.model_id == "gemma-4-12b-it"
+    assert c.backend == "rocm"
+    assert c.preset == "thinking-budgeted"
+
+
+# ── container_state ───────────────────────────────────────────────────────────
+
+def test_container_state_returns_status_when_present():
+    state = container_state(
+        "/usr/bin/docker", "llamactl-qwen3-9b", runner=lambda _: _ok("exited\n")
+    )
+    assert state == "exited"
+
+
+def test_container_state_passes_inspect_command():
+    captured: list[list[str]] = []
+    def runner(cmd):
+        captured.append(cmd)
+        return _ok("running\n")
+    container_state("/usr/bin/docker", "llamactl-qwen3-9b", runner=runner)
+    assert captured[0] == [
+        "/usr/bin/docker", "inspect", "--format", "{{.State.Status}}", "llamactl-qwen3-9b"
+    ]
+
+
+def test_container_state_returns_none_when_absent():
+    # `inspect` on a missing container exits non-zero.
+    state = container_state("/usr/bin/docker", "nope", runner=lambda _: _err())
+    assert state is None
 
 
 def test_list_managed_returns_empty_on_nonzero_exit():
