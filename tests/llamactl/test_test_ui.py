@@ -83,3 +83,21 @@ async def test_verdict_banner_renders(tmp_path):
         # which found that this Textual version exposes updated content via
         # render() rather than .renderable in headless pilot mode.
         assert "WARN" in str(verdict.render())
+
+
+@pytest.mark.asyncio
+async def test_cancel_signal_is_threading_event(tmp_path):
+    """Cancellation must be a threading.Event (explicit cross-thread signal),
+    available immediately after construction — not a plain bool set in on_mount."""
+    import threading
+    from llamactl.ui.app import LlamaCtlApp
+    from llamactl.ui.screens.test import TestScreen
+    from textual.widgets import TabbedContent
+
+    app = LlamaCtlApp(repo_root=_repo_with_model(tmp_path))
+    async with app.run_test(headless=True) as pilot:
+        app.query_one(TabbedContent).active = "test"
+        await pilot.pause()
+        screen = app.query_one(TestScreen)
+        assert isinstance(screen._cancel_evt, threading.Event)
+        assert not screen._cancel_evt.is_set()

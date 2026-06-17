@@ -1,6 +1,8 @@
 """Test tab — quick OOM boundary check against the running server."""
 from __future__ import annotations
 
+import threading
+
 from textual import on
 from textual.app import ComposeResult
 from textual.css.query import NoMatches
@@ -107,6 +109,11 @@ class TestScreen(Widget):
     TestScreen #verdict { padding: 1; }
     """
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._running = False          # whether a test run is in progress
+        self._cancel_evt = threading.Event()  # cross-thread cancel signal
+
     def compose(self) -> ComposeResult:
         yield Label("OOM boundary check", id="test-title")
         yield Static("", id="test-precondition")
@@ -125,8 +132,6 @@ class TestScreen(Widget):
         )
 
     def on_mount(self) -> None:
-        self._running = False  # tracks whether a test run is in progress
-        self._cancelled = False
         self._refresh_precondition()
 
     # ── Internal helpers ─────────────────────────────────────────────────────
@@ -160,7 +165,7 @@ class TestScreen(Widget):
             return
         if self._running:
             # User pressed "Stop"
-            self._cancelled = True
+            self._cancel_evt.set()
             event.button.label = "Stopping…"
             event.button.disabled = True
         else:
@@ -171,7 +176,7 @@ class TestScreen(Widget):
         if server is None:
             self._refresh_precondition()
             return
-        self._cancelled = False
+        self._cancel_evt.clear()
         self._running = True
         # Capture app state on the UI thread; never read self.app from the worker.
         global_cfg = self.app._global_cfg
@@ -197,7 +202,7 @@ class TestScreen(Widget):
                 server,
                 reporter,
                 global_cfg=global_cfg,
-                cancel=lambda: self._cancelled,
+                cancel=self._cancel_evt.is_set,
             )
         except Exception as exc:
             result = OomTestResult(
