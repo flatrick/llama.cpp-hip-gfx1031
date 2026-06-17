@@ -126,7 +126,7 @@ class _VramGauge(Widget):
     }
     """
 
-    vram_kib: reactive[int] = reactive(0)
+    vram_kib: reactive[int | None] = reactive(0)
     budget_kib: reactive[int] = reactive(11 * 1024 * 1024)
 
     def compose(self) -> ComposeResult:
@@ -134,7 +134,7 @@ class _VramGauge(Widget):
         yield ProgressBar(id="vram-bar", total=100, show_eta=False)
         yield Static("0.0 / 11.0 GiB", id="vram-label")
 
-    def watch_vram_kib(self, new_vram: int) -> None:
+    def watch_vram_kib(self, new_vram: int | None) -> None:
         try:
             bar = self.query_one("#vram-bar", ProgressBar)
             label = self.query_one("#vram-label", Static)
@@ -142,8 +142,17 @@ class _VramGauge(Widget):
             return
 
         budget = self.budget_kib
-        used_gib = new_vram / (1024 * 1024)
         budget_gib = budget / (1024 * 1024)
+
+        # None → could not read fdinfo (e.g. permission denied). Show it as
+        # unavailable instead of a misleading 0.
+        if new_vram is None:
+            label.update(f"— / {budget_gib:.1f} GiB (no read access)")
+            bar.progress = 0
+            self.remove_class("_vram-over")
+            return
+
+        used_gib = new_vram / (1024 * 1024)
         label.update(f"{used_gib:.1f} / {budget_gib:.1f} GiB")
 
         if budget > 0:
@@ -447,6 +456,12 @@ class ServeScreen(Widget):
             stop_btn.disabled = True
             launch_btn.disabled = False
             header.state = ServerState.STOPPED
+            # Reset the VRAM gauge — the poll loop stops updating once there is
+            # no server, so without this the last reading would linger on screen.
+            try:
+                self.query_one(_VramGauge).vram_kib = 0
+            except NoMatches:
+                pass
 
     async def _poll_vram_and_health(self) -> None:
         """Called every 2 seconds by set_interval. Updates VRAM gauge and health state."""
@@ -454,7 +469,11 @@ class ServeScreen(Widget):
             return
         try:
             import asyncio
-            from llamactl.core.monitor import check_health, read_vram_kib
+            from llamactl.core.monitor import (
+                check_health,
+                read_container_vram_kib,
+                read_vram_kib,
+            )
             app: LlamaCtlApp = self.app  # type: ignore[assignment]
             port = self._server_info.port
             pid_str = (
@@ -483,27 +502,28 @@ class ServeScreen(Widget):
             header = self.query_one(_StatusHeader)
             header.state = new_state
 
-            # Resolve VRAM PID: native has pid, container needs inspect
-            vram_pid = pid_str
-            if (
-                vram_pid is None
-                and mode == "container"
-                and self._server_info.container_name
-            ):
-                from llamactl.core.runtime import find_runtime, get_container_pid
+            # Resolve VRAM usage. None means "could not read" (surface as
+            # unavailable); an int (incl. 0) is a real reading.
+            #
+            # Native: read the server's own /proc/<pid>/fdinfo directly.
+            # Container: read fdinfo *inside* the container via `exec` — the
+            # server runs as root in the container, so reading host-side
+            # /proc/<pid>/fdinfo as a normal user fails with permission denied
+            # and would show a misleading 0.
+            vram_kib: int | None = None
+            if mode == "native" and pid_str is not None:
+                vram_kib = await asyncio.to_thread(read_vram_kib, pid_str)
+            elif mode == "container" and self._server_info.container_name:
+                from llamactl.core.runtime import find_runtime
                 rt = find_runtime()
                 if rt is not None:
-                    container_pid = await asyncio.to_thread(
-                        get_container_pid, self._server_info.container_name, rt
+                    vram_kib = await asyncio.to_thread(
+                        read_container_vram_kib, self._server_info.container_name, rt
                     )
-                    if container_pid is not None:
-                        vram_pid = str(container_pid)
 
-            if vram_pid is not None:
-                vram_kib = await asyncio.to_thread(read_vram_kib, vram_pid)
-                gauge = self.query_one(_VramGauge)
-                gauge.vram_kib = vram_kib
-                gauge.budget_kib = int(app._global_cfg.vram_budget_gb * 1024 * 1024)
+            gauge = self.query_one(_VramGauge)
+            gauge.budget_kib = int(app._global_cfg.vram_budget_gb * 1024 * 1024)
+            gauge.vram_kib = vram_kib
         except Exception as exc:
             try:
                 log = self.query_one("#log-pane", RichLog)

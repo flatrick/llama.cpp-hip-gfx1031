@@ -73,7 +73,9 @@ def build_vram_monitor(
         if pid is None:
             return None
         kib = read_vram_kib(pid)
-        return kib / 1024 ** 2 if kib > 0 else None
+        # kib is None when fdinfo is unreadable (e.g. permission denied) and 0
+        # when there is no DRM memory; both mean "no usable reading" here.
+        return kib / 1024 ** 2 if kib else None
 
     return VramMonitor(_reader, mode)
 
