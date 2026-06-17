@@ -31,8 +31,42 @@ class _PromptBuilder:
 
 
 class _Monitor:
+    sample_interval_ms = 200
+
     def read(self):
         return 1.0
+
+
+def test_sample_request_uses_monitor_interval(monkeypatch):
+    """The phase's PeakVramSampler must use the monitor's configured cadence."""
+    import stress_harness.phases as phases_mod
+    from stress_harness.monitoring import VramMonitor
+
+    captured = {}
+
+    class _SpySampler:
+        def __init__(self, monitor, interval_ms=200):
+            captured["interval_ms"] = interval_ms
+        def start(self):
+            return self
+        def stop(self):
+            return None
+
+    monkeypatch.setattr(phases_mod, "PeakVramSampler", _SpySampler)
+
+    monitor = VramMonitor(lambda: 1.0, "test", sample_interval_ms=1000)
+    config = StressConfig(sustained_rounds=1)
+    phase = SustainedPhase(
+        config=config,
+        client=_Client(),
+        prompt_builder=_PromptBuilder(),
+        vram_monitor=monitor,
+        runtime_inspector=_Inspector(),
+        runtime_info=RuntimeInfo(runtime=None, container_id=None, status_message="x"),
+        reporter=_Reporter(),
+    )
+    phase.run(last_ok_tokens=1000)
+    assert captured["interval_ms"] == 1000
 
 
 def test_sustained_phase_stops_when_cancelled():

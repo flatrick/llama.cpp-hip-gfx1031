@@ -333,6 +333,16 @@ def test_run_oom_check_returns_stopped_when_cancelled(monkeypatch):
     assert result.verdict == "STOPPED"
 
 
+def test_vram_monitor_default_sample_interval():
+    mon = VramMonitor(lambda: 1.0, "test")
+    assert mon.sample_interval_ms == 200
+
+
+def test_vram_monitor_custom_sample_interval():
+    mon = VramMonitor(lambda: 1.0, "test", sample_interval_ms=1000)
+    assert mon.sample_interval_ms == 1000
+
+
 def test_run_oom_check_quick_flag_controls_rounds(monkeypatch):
     """quick=True keeps reduced rounds; quick=False uses full rounds.
 

@@ -54,7 +54,9 @@ class BasePhase:
         prompt_length_chars: int | None = None,
         system: str | None = None,
     ) -> PhaseSample:
-        sampler = PeakVramSampler(self.vram_monitor).start()
+        sampler = PeakVramSampler(
+            self.vram_monitor, interval_ms=self.vram_monitor.sample_interval_ms
+        ).start()
         try:
             request = self.client.send_request(
                 prompt=prompt,
@@ -284,7 +286,9 @@ class BoundaryPhase(BasePhase):
         over_prompt = self.prompt_builder.build(ctx_size + self.config.max_tokens * 2)
         vram_before = self.vram_monitor.read()
         log_reader = self.open_log_reader()
-        sampler = PeakVramSampler(self.vram_monitor).start()
+        sampler = PeakVramSampler(
+            self.vram_monitor, interval_ms=self.vram_monitor.sample_interval_ms
+        ).start()
 
         try:
             self.client.send_request(

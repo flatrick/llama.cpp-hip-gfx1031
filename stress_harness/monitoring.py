@@ -11,9 +11,10 @@ from .runtime import ContainerRuntimeInspector
 
 
 class VramMonitor:
-    def __init__(self, reader, mode: str) -> None:
+    def __init__(self, reader, mode: str, sample_interval_ms: int = 200) -> None:
         self._reader = reader
         self.mode = mode
+        self.sample_interval_ms = sample_interval_ms
 
     @classmethod
     def create(cls, inspector: ContainerRuntimeInspector, info: RuntimeInfo) -> "VramMonitor":
