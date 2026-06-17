@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import urllib.error
+from typing import Callable
 
 from .config import StressConfig
 from .models import PhaseResult, PhaseSample, RuntimeInfo
@@ -24,6 +25,7 @@ class BasePhase:
         runtime_inspector: ContainerRuntimeInspector,
         runtime_info: RuntimeInfo,
         reporter: ConsoleReporter,
+        cancel: Callable[[], bool] = lambda: False,
     ) -> None:
         self.config = config
         self.client = client
@@ -32,6 +34,7 @@ class BasePhase:
         self.runtime_inspector = runtime_inspector
         self.runtime_info = runtime_info
         self.reporter = reporter
+        self.cancel = cancel
 
     def open_log_reader(self) -> ContainerLogReader | None:
         return self.runtime_inspector.start_log_reader(self.runtime_info)
@@ -107,6 +110,8 @@ class RampPhase(BasePhase):
         last_ok_tokens = 0
 
         for target in steps:
+            if self.cancel():
+                break
             prompt = self.prompt_builder.build(target)
             sample = self._sample_request(
                 log_reader=log_reader,
@@ -143,6 +148,8 @@ class SustainedPhase(BasePhase):
         prompt = self.prompt_builder.build(last_ok_tokens)
 
         for index in range(1, self.config.sustained_rounds + 1):
+            if self.cancel():
+                break
             sample = self._sample_request(log_reader, str(index), prompt)
             result.samples.append(sample)
             self.reporter.record_sample(self.key, sample, self.config.vram_warn_gb)
@@ -170,6 +177,8 @@ class ColdStartPhase(BasePhase):
         first_cold_vram: float | None = None
 
         for index in range(1, self.config.cold_rounds + 1):
+            if self.cancel():
+                break
             prompt = self.prompt_builder.build(last_ok_tokens, prefix=f"[cold-start round {index}]")
             sample = self._sample_request(log_reader, str(index), prompt)
             if sample.ok and sample.post_vram_gb is not None:
@@ -215,6 +224,8 @@ class DefragPhase(BasePhase):
         evict_system = "You are a different assistant with no memory of previous conversations."
 
         for cycle in range(1, self.config.defrag_cycles + 1):
+            if self.cancel():
+                break
             fill_prompt = self.prompt_builder.build(last_ok_tokens, prefix=f"[defrag cycle {cycle} fill]")
             fill_sample = self._sample_request(log_reader, f"{cycle}:fill", fill_prompt)
             if fill_sample.ok and fill_sample.peak_vram_gb is not None:
@@ -267,6 +278,8 @@ class BoundaryPhase(BasePhase):
         title = "Phase 5: Boundary — request at ctx_size+1 must get clean HTTP 400"
         result = PhaseResult(key=self.key, title=title)
         self.reporter.start_phase(result)
+        if self.cancel():
+            return result
 
         over_prompt = self.prompt_builder.build(ctx_size + self.config.max_tokens * 2)
         vram_before = self.vram_monitor.read()
