@@ -14,7 +14,7 @@ import re
 import struct
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from llamactl.core.config import GlobalConfig, ModelConfig
 
@@ -156,6 +156,29 @@ _DEFAULT_CTX = 4096
 _DEFAULT_BATCH = 512
 
 
+def _positive_int(value: Any) -> bool:
+    """True for a usable scalar count. Rejects bools, non-ints, and arrays
+    (some GGUFs store head_count_kv / key_length as per-layer arrays, which we
+    don't model)."""
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _compute_buffer_batch(settings: dict[str, Any]) -> int:
+    """Token count that drives the graph compute buffer.
+
+    llama.cpp sizes the compute buffer for the *physical* micro-batch
+    (`--ubatch-size` / `n_ubatch`), not the logical `--batch-size`. Keying the
+    estimate off batch_size overcounted VRAM whenever ubatch < batch (the common
+    case: ubatch 256, batch 1024 over-stated the buffer by ~1.35 GB). Prefer
+    ubatch_size, fall back to batch_size, then the default.
+    """
+    return int(
+        settings.get("ubatch_size")
+        or settings.get("batch_size")
+        or _DEFAULT_BATCH
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class Estimate:
     total_gb: float
@@ -257,13 +280,15 @@ def resolve_gguf_path(hf_spec: str, global_cfg: GlobalConfig) -> Path | None:
     return None
 
 
-def estimate_vram(
-    model: ModelConfig,
-    resolved_settings: dict[str, Any],
-    global_cfg: GlobalConfig,
-) -> Estimate | None:
-    """Estimate VRAM (GiB) for a model + resolved settings, or None if the GGUF
-    is not locally available / not readable. Never raises."""
+def _load_params(
+    model: ModelConfig, global_cfg: GlobalConfig
+) -> dict[str, Any] | None:
+    """Resolve a model's GGUF and read its VRAM params, or None if the file is
+    absent / unreadable / lacks KV-cache metadata. Never raises.
+
+    Shared by estimate_vram and sweep_vram so both apply the same
+    "unavailable rather than wrong" guarantee.
+    """
     path = resolve_gguf_path(model.hf, global_cfg)
     if path is None:
         return None
@@ -272,17 +297,123 @@ def estimate_vram(
     except Exception as exc:  # corrupt/unreadable header
         _log.warning("estimate: cannot read GGUF %s: %s", path, exc)
         return None
-    if not params.get("kv_heads") or not params.get("head_dim"):
+    if not _positive_int(params.get("kv_heads")) or not _positive_int(params.get("head_dim")):
         _log.warning(
-            "estimate: GGUF %s lacks KV-cache metadata (kv_heads=%s, head_dim=%s); "
-            "estimate unavailable rather than under-counting KV", path,
+            "estimate: GGUF %s lacks usable scalar KV-cache metadata "
+            "(kv_heads=%r, head_dim=%r); estimate unavailable rather than "
+            "under-counting or mis-multiplying KV", path,
             params.get("kv_heads"), params.get("head_dim"),
         )
+        return None
+    return params
+
+
+def estimate_vram(
+    model: ModelConfig,
+    resolved_settings: dict[str, Any],
+    global_cfg: GlobalConfig,
+) -> Estimate | None:
+    """Estimate VRAM (GiB) for a model + resolved settings, or None if the GGUF
+    is not locally available / not readable. Never raises."""
+    params = _load_params(model, global_cfg)
+    if params is None:
         return None
     return compute_estimate(
         params=params,
         ctx_size=int(resolved_settings.get("ctx_size", _DEFAULT_CTX)),
         cache_type_k=resolved_settings.get("cache_type_k"),
         cache_type_v=resolved_settings.get("cache_type_v"),
-        batch_size=int(resolved_settings.get("batch_size", _DEFAULT_BATCH)),
+        batch_size=_compute_buffer_batch(resolved_settings),
+    )
+
+
+# ---------------------------------------------------------------------------
+# VRAM what-if sweep (ports vram_calc.py's ctx-size / cache-type tables).
+# A 2-D grid of total VRAM across context sizes × cache types, each classified
+# OK / TIGHT / OOM against the configured VRAM budget — decision support for
+# picking ctx_size and cache precision before launch.
+# ---------------------------------------------------------------------------
+
+# Default sweep axes (ported from vram_calc.py's what-if tables).
+SWEEP_CTX_SIZES: tuple[int, ...] = (8192, 16384, 32768, 65536, 131072)
+SWEEP_CACHE_TYPES: tuple[str, ...] = ("f16", "q8_0", "q5_0", "q4_0")
+# Headroom below which a fitting estimate is flagged TIGHT (ported from vram_calc.py).
+TIGHT_HEADROOM_GB = 0.5
+
+
+@dataclass(frozen=True, slots=True)
+class SweepCell:
+    ctx_size: int
+    cache_type: str
+    estimate: Estimate
+    status: str  # "ok" | "tight" | "oom"
+
+
+def classify_headroom(total_gb: float, budget_gb: float) -> str:
+    """Classify an estimate against a VRAM budget: oom / tight / ok.
+
+    Negative headroom is OOM; less than TIGHT_HEADROOM_GB (inclusive of 0) is
+    TIGHT; otherwise OK.
+    """
+    headroom = budget_gb - total_gb
+    if headroom < 0:
+        return "oom"
+    if headroom < TIGHT_HEADROOM_GB:
+        return "tight"
+    return "ok"
+
+
+def estimate_sweep(
+    *,
+    params: dict[str, Any],
+    base_settings: dict[str, Any],
+    budget_gb: float,
+    ctx_sizes: Sequence[int] = SWEEP_CTX_SIZES,
+    cache_types: Sequence[str] = SWEEP_CACHE_TYPES,
+) -> list[SweepCell]:
+    """Build the ctx × cache VRAM grid for already-loaded GGUF params.
+
+    Reuses compute_estimate for every cell (no new VRAM math); both K and V
+    cache use the row's cache type, matching vram_calc.py's cache table. The
+    non-swept settings (e.g. ubatch/batch size) come from base_settings.
+    """
+    batch_size = _compute_buffer_batch(base_settings)
+    cells: list[SweepCell] = []
+    for ctx in ctx_sizes:
+        for cache in cache_types:
+            est = compute_estimate(
+                params=params,
+                ctx_size=ctx,
+                cache_type_k=cache,
+                cache_type_v=cache,
+                batch_size=batch_size,
+            )
+            cells.append(
+                SweepCell(ctx, cache, est, classify_headroom(est.total_gb, budget_gb))
+            )
+    return cells
+
+
+def sweep_vram(
+    model: ModelConfig,
+    base_settings: dict[str, Any],
+    global_cfg: GlobalConfig,
+    *,
+    ctx_sizes: Sequence[int] = SWEEP_CTX_SIZES,
+    cache_types: Sequence[str] = SWEEP_CACHE_TYPES,
+) -> list[SweepCell] | None:
+    """What-if VRAM grid for a model, or None if its GGUF is unavailable.
+
+    Resolves + reads the GGUF once (same availability guarantee as
+    estimate_vram) and classifies against global_cfg.vram_budget_gb.
+    """
+    params = _load_params(model, global_cfg)
+    if params is None:
+        return None
+    return estimate_sweep(
+        params=params,
+        base_settings=base_settings,
+        budget_gb=global_cfg.vram_budget_gb,
+        ctx_sizes=ctx_sizes,
+        cache_types=cache_types,
     )

@@ -9,9 +9,14 @@ import pytest
 
 from llamactl.core.lifecycle import ServerState
 from llamactl.core.monitor import (
+    VramDelta,
+    VramSnapshot,
     check_health,
     read_container_vram_kib,
+    read_container_vram_snapshot,
     read_vram_kib,
+    read_vram_snapshot,
+    vram_delta,
 )
 
 import subprocess
@@ -73,6 +78,83 @@ def test_read_vram_kib_returns_none_on_permission_denied(monkeypatch):
     assert read_vram_kib("18145") is None
 
 
+# ── read_vram_snapshot: per-client / per-category breakdown ───────────────────
+
+def test_read_vram_snapshot_breaks_down_by_field_and_client(tmp_path):
+    pid_dir = tmp_path / "12345"
+    _write_fdinfo(pid_dir, "10", "client-1", {
+        "drm-memory-vram": 2_000_000,
+        "drm-memory-gtt":    500_000,
+    })
+    _write_fdinfo(pid_dir, "11", "client-2", {"drm-memory-vram": 1_000_000})
+    snap = read_vram_snapshot("12345", fdinfo_root=str(tmp_path))
+    assert isinstance(snap, VramSnapshot)
+    assert snap.total_kib == 2_000_000 + 500_000 + 1_000_000
+    assert snap.by_field == {"drm-memory-vram": 3_000_000, "drm-memory-gtt": 500_000}
+    assert snap.by_client["client-1"] == {"drm-memory-vram": 2_000_000, "drm-memory-gtt": 500_000}
+    assert snap.by_client["client-2"] == {"drm-memory-vram": 1_000_000}
+
+
+def test_read_vram_snapshot_dedups_shared_client(tmp_path):
+    pid_dir = tmp_path / "12345"
+    _write_fdinfo(pid_dir, "10", "shared", {"drm-memory-vram": 1_000_000})
+    _write_fdinfo(pid_dir, "11", "shared", {"drm-memory-vram": 1_000_000})
+    snap = read_vram_snapshot("12345", fdinfo_root=str(tmp_path))
+    assert snap is not None
+    assert snap.total_kib == 1_000_000  # counted once
+    assert snap.by_field == {"drm-memory-vram": 1_000_000}
+
+
+def test_read_vram_snapshot_returns_empty_for_missing_pid(tmp_path):
+    snap = read_vram_snapshot("99999", fdinfo_root=str(tmp_path))
+    assert snap is not None
+    assert snap.total_kib == 0
+    assert snap.by_field == {}
+
+
+def test_read_vram_snapshot_returns_none_on_permission_denied(monkeypatch):
+    def _denied(_path):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr("os.listdir", _denied)
+    assert read_vram_snapshot("18145") is None
+
+
+def test_read_vram_kib_still_returns_total(tmp_path):
+    # Back-compat: read_vram_kib stays an int sum after the snapshot refactor.
+    pid_dir = tmp_path / "12345"
+    _write_fdinfo(pid_dir, "10", "c1", {"drm-memory-vram": 700_000})
+    assert read_vram_kib("12345", fdinfo_root=str(tmp_path)) == 700_000
+
+
+# ── vram_delta: per-category signed change ────────────────────────────────────
+
+def test_vram_delta_signed_per_field():
+    before = VramSnapshot(
+        total_kib=1_500_000,
+        by_field={"drm-memory-vram": 1_000_000, "drm-memory-gtt": 500_000},
+        by_client={},
+    )
+    after = VramSnapshot(
+        total_kib=2_200_000,
+        by_field={"drm-memory-vram": 2_000_000, "drm-memory-gtt": 200_000},
+        by_client={},
+    )
+    d = vram_delta(before, after)
+    assert isinstance(d, VramDelta)
+    assert d.total_kib == 700_000
+    assert d.by_field["drm-memory-vram"] == 1_000_000
+    assert d.by_field["drm-memory-gtt"] == -300_000
+
+
+def test_vram_delta_handles_new_and_dropped_fields():
+    before = VramSnapshot(total_kib=100, by_field={"drm-memory-vram": 100}, by_client={})
+    after = VramSnapshot(total_kib=50, by_field={"drm-memory-gtt": 50}, by_client={})
+    d = vram_delta(before, after)
+    assert d.by_field == {"drm-memory-vram": -100, "drm-memory-gtt": 50}
+    assert d.total_kib == -50
+
+
 # ── read_container_vram_kib ───────────────────────────────────────────────────
 
 def _ok(stdout: str) -> subprocess.CompletedProcess:
@@ -122,6 +204,21 @@ def test_read_container_vram_kib_dedups_client_id():
 def test_read_container_vram_kib_returns_none_on_exec_failure():
     total = read_container_vram_kib("c", "/usr/bin/docker", runner=lambda _: _err())
     assert total is None
+
+
+def test_read_container_vram_snapshot_breaks_down_by_client():
+    snap = read_container_vram_snapshot(
+        "c", "/usr/bin/docker", runner=lambda _: _ok(_EXEC_TWO_CLIENTS),
+    )
+    assert isinstance(snap, VramSnapshot)
+    assert snap.total_kib == 1_500_000
+    assert snap.by_field == {"drm-memory-vram": 1_500_000}
+    assert set(snap.by_client) == {"100", "101"}
+
+
+def test_read_container_vram_snapshot_none_on_exec_failure():
+    snap = read_container_vram_snapshot("c", "/usr/bin/docker", runner=lambda _: _err())
+    assert snap is None
 
 
 def test_read_container_vram_kib_parses_output_despite_nonzero_exit():
@@ -202,16 +299,24 @@ def test_check_health_returns_unhealthy_on_other_http_error():
 
 # ── read_server_vram_kib ──────────────────────────────────────────────────────
 
+def _snap(total: int) -> VramSnapshot:
+    return VramSnapshot(total_kib=total, by_field={"drm-memory-vram": total}, by_client={})
+
+
 def test_read_server_vram_kib_dispatches_native(monkeypatch):
     from llamactl.core.lifecycle import ServerInfo
     import llamactl.core.monitor as mon
 
-    monkeypatch.setattr(mon, "read_vram_kib", lambda pid, **kw: 12345 if pid == "1234" else 0)
+    monkeypatch.setattr(
+        mon, "read_vram_snapshot",
+        lambda pid, **kw: _snap(12345) if pid == "1234" else _snap(0),
+    )
     server = ServerInfo(
         model_id="m", backend="rocm", preset="", mode="native",
         host="0.0.0.0", port=8080, started_at="", pid=1234,
     )
     assert mon.read_server_vram_kib(server, None) == 12345
+    assert mon.read_server_vram_snapshot(server, None).total_kib == 12345
 
 
 def test_read_server_vram_kib_dispatches_container(monkeypatch):
@@ -219,8 +324,8 @@ def test_read_server_vram_kib_dispatches_container(monkeypatch):
     import llamactl.core.monitor as mon
 
     monkeypatch.setattr(
-        mon, "read_container_vram_kib",
-        lambda name, runtime, **kw: 999 if name == "llamactl-m" else None,
+        mon, "read_container_vram_snapshot",
+        lambda name, runtime, **kw: _snap(999) if name == "llamactl-m" else None,
     )
     server = ServerInfo(
         model_id="m", backend="rocm", preset="", mode="container",

@@ -5,11 +5,22 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from rich.markup import escape
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.widget import Widget
-from textual.widgets import Button, Label, ProgressBar, RichLog, Select, Static
+from textual.widgets import (
+    Button,
+    Collapsible,
+    DataTable,
+    Label,
+    ProgressBar,
+    RichLog,
+    Select,
+    Static,
+)
 
 from llamactl.core.config import GlobalConfig, ModelConfig, resolve_settings
 from llamactl.core.lifecycle import ServerInfo, ServerState, resolve_image
@@ -38,6 +49,38 @@ def _container_alive(container_name: str) -> bool:
         return False
     containers = list_managed(rt, "")  # empty prefix = all managed
     return any(c.name == container_name and c.state == "running" for c in containers)
+
+
+# ── VRAM what-if / delta formatting (module-level for easy testing) ───────────
+
+_KIB_PER_GIB = 1024 * 1024
+_SWEEP_STATUS_STYLE = {"ok": "green", "tight": "yellow", "oom": "red"}
+
+
+def _format_ctx(ctx_size: int) -> str:
+    """Human ctx label, e.g. 131072 → '128K'."""
+    if ctx_size % 1024 == 0:
+        return f"{ctx_size // 1024}K"
+    return str(ctx_size)
+
+
+def _format_sweep_cell(cell: Any) -> Text:
+    """A SweepCell rendered as 'N.N' coloured by OK/TIGHT/OOM status."""
+    if cell is None:
+        return Text("—")
+    style = _SWEEP_STATUS_STYLE.get(cell.status, "")
+    return Text(f"{cell.estimate.total_gb:.1f}", style=style)
+
+
+def _format_delta(delta: Any) -> str:
+    """Render a VramDelta as a signed total plus non-zero per-category changes."""
+    total_gib = delta.total_kib / _KIB_PER_GIB
+    parts = [f"Δ total {total_gib:+.2f} GiB"]
+    for field in sorted(delta.by_field):
+        kib = delta.by_field[field]
+        if kib:
+            parts.append(f"{field}={kib / _KIB_PER_GIB:+.2f}")
+    return "  ".join(parts)
 
 
 # ── Status Header ─────────────────────────────────────────────────────────────
@@ -242,9 +285,15 @@ class _LaunchForm(Widget):
             yield Button("Launch", id="btn-launch", variant="success")
             yield Button("Stop", id="btn-stop", variant="error", disabled=True)
             yield Button("Copy argv", id="btn-copy-argv")
+            yield Button("VRAM snapshot", id="btn-vram-snapshot", disabled=True)
 
         yield Static("(select a model to preview the launch command)", id="argv-preview")
         yield Static("", id="estimate-line")
+
+        # VRAM what-if grid (ports vram_calc.py's ctx-size / cache-type tables).
+        # Collapsed by default so it doesn't crowd the launch form.
+        with Collapsible(title="VRAM what-if (ctx × cache)", collapsed=True, id="what-if"):
+            yield DataTable(id="what-if-table", show_cursor=False, zebra_stripes=True)
 
     def on_select_changed(self, event: Select.Changed) -> None:
         select_id = event.select.id
@@ -362,9 +411,51 @@ class _LaunchForm(Widget):
             argv_str = " ".join(argv)
             preview.update(f"[bold]Image:[/bold] {image}\n[bold]argv:[/bold] {argv_str}")
             est_line.update(self._format_estimate(model, settings, app._global_cfg))
+            self._refresh_what_if(model, settings, app._global_cfg)
         except Exception as exc:
             preview.update(f"[red]Config error: {exc}[/red]")
             est_line.update("")
+
+    def _refresh_what_if(
+        self,
+        model: ModelConfig,
+        settings: dict[str, Any],
+        global_cfg: GlobalConfig,
+    ) -> None:
+        """Fill the what-if table: rows = ctx sizes, cols = cache types, cell =
+        total GB coloured OK/TIGHT/OOM against the VRAM budget."""
+        from llamactl.core.estimate import (
+            SWEEP_CACHE_TYPES,
+            SWEEP_CTX_SIZES,
+            sweep_vram,
+        )
+        try:
+            table = self.query_one("#what-if-table", DataTable)
+        except NoMatches:
+            return
+
+        table.clear(columns=True)
+        cells = sweep_vram(model, settings, global_cfg)
+        if cells is None:
+            table.add_column("ctx \\ cache")
+            table.add_row("model not downloaded — estimate unavailable")
+            return
+
+        table.add_column("ctx \\ cache")
+        for cache in SWEEP_CACHE_TYPES:
+            table.add_column(cache)
+
+        by_ctx: dict[int, dict[str, Any]] = {}
+        for cell in cells:
+            by_ctx.setdefault(cell.ctx_size, {})[cell.cache_type] = cell
+
+        for ctx in SWEEP_CTX_SIZES:
+            if ctx not in by_ctx:
+                continue
+            row = [Text(_format_ctx(ctx))]
+            for cache in SWEEP_CACHE_TYPES:
+                row.append(_format_sweep_cell(by_ctx[ctx].get(cache)))
+            table.add_row(*row)
 
     @staticmethod
     def _format_estimate(
@@ -416,6 +507,9 @@ class ServeScreen(Widget):
     def __init__(self) -> None:
         super().__init__()
         self._server_info: ServerInfo | None = None
+        # Baseline for the Snapshot→Delta VRAM leak-investigation workflow
+        # (ports vram_inspect.py --delta). None = no baseline captured yet.
+        self._vram_baseline: Any = None
 
     @property
     def has_running_server(self) -> bool:
@@ -428,8 +522,9 @@ class ServeScreen(Widget):
 
         yield _StatusHeader()
         yield _VramGauge()
+        yield Static("", id="vram-delta")
         yield _LaunchForm(models, model_errors)
-        yield RichLog(id="log-pane")
+        yield RichLog(id="log-pane", markup=True)
 
     def on_mount(self) -> None:
         """Re-attach to any already-running server, then start polling."""
@@ -448,14 +543,24 @@ class ServeScreen(Widget):
         form = self.query_one(_LaunchForm)
         stop_btn = form.query_one("#btn-stop", Button)
         launch_btn = form.query_one("#btn-launch", Button)
+        snapshot_btn = form.query_one("#btn-vram-snapshot", Button)
         if info is not None:
             stop_btn.disabled = False
             launch_btn.disabled = True
+            snapshot_btn.disabled = False
             header.state = ServerState.STARTING
         else:
             stop_btn.disabled = True
             launch_btn.disabled = False
+            snapshot_btn.disabled = True
             header.state = ServerState.STOPPED
+            # No server → reset the Snapshot→Delta workflow back to its start.
+            self._vram_baseline = None
+            snapshot_btn.label = "VRAM snapshot"
+            try:
+                self.query_one("#vram-delta", Static).update("")
+            except NoMatches:
+                pass
             # Reset the VRAM gauge — the poll loop stops updating once there is
             # no server, so without this the last reading would linger on screen.
             try:
@@ -504,7 +609,7 @@ class ServeScreen(Widget):
         except Exception as exc:
             try:
                 log = self.query_one("#log-pane", RichLog)
-                log.write(f"[red]Poll error:[/red] {exc}")
+                log.write(f"[red]Poll error:[/red] {escape(str(exc))}")
             except Exception:
                 pass
 
@@ -517,6 +622,8 @@ class ServeScreen(Widget):
             self.run_worker(self._action_stop())
         elif event.button.id == "btn-copy-argv":
             self._action_copy_argv()
+        elif event.button.id == "btn-vram-snapshot":
+            self.run_worker(self._action_vram_snapshot())
 
     async def _action_launch(self) -> None:
         import asyncio
@@ -567,7 +674,7 @@ class ServeScreen(Widget):
                 log.write(f"[green]Native server started:[/green] PID {info.pid}")
         except Exception as exc:
             self.notify(f"Launch failed: {exc}", severity="error")
-            log.write(f"[red]Launch error:[/red] {exc}")
+            log.write(f"[red]Launch error:[/red] {escape(str(exc))}")
             form.query_one("#btn-launch", Button).disabled = False
             return
         self.notify(
@@ -592,13 +699,53 @@ class ServeScreen(Widget):
             self._set_server(None)  # only on success
         except Exception as exc:
             self.notify(f"Stop failed: {exc}", severity="error")
-            log.write(f"[red]Stop error:[/red] {exc}")
+            log.write(f"[red]Stop error:[/red] {escape(str(exc))}")
             # Re-enable stop button (it was disabled before worker ran)
             try:
                 form = self.query_one(_LaunchForm)
                 form.query_one("#btn-stop", Button).disabled = False
             except Exception:
                 pass
+
+    async def _action_vram_snapshot(self) -> None:
+        """Snapshot → Delta VRAM workflow (ports vram_inspect.py --delta).
+
+        First press captures a baseline; second press reads again and shows the
+        signed per-category change, then resets. Surfaces "unavailable" if the
+        VRAM source cannot be read (e.g. host permission wall on a container).
+        """
+        import asyncio
+        from llamactl.core.monitor import read_server_vram_snapshot, vram_delta
+        from llamactl.core.runtime import find_runtime
+
+        if self._server_info is None:
+            self.notify("Start a server before capturing VRAM.", severity="warning")
+            return
+
+        rt = find_runtime() if self._server_info.mode == "container" else None
+        snap = await asyncio.to_thread(read_server_vram_snapshot, self._server_info, rt)
+
+        delta_line = self.query_one("#vram-delta", Static)
+        form = self.query_one(_LaunchForm)
+        btn = form.query_one("#btn-vram-snapshot", Button)
+
+        if snap is None:
+            delta_line.update("[yellow]VRAM snapshot unavailable (no read access).[/yellow]")
+            return
+
+        if self._vram_baseline is None:
+            self._vram_baseline = snap
+            gib = snap.total_kib / _KIB_PER_GIB
+            delta_line.update(
+                f"Baseline {gib:.2f} GiB captured — send a request, "
+                f"then click [bold]VRAM delta[/bold]."
+            )
+            btn.label = "VRAM delta"
+        else:
+            delta = vram_delta(self._vram_baseline, snap)
+            self._vram_baseline = None
+            btn.label = "VRAM snapshot"
+            delta_line.update(_format_delta(delta))
 
     def _action_copy_argv(self) -> None:
         from llamactl.core.config import resolve_settings

@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from typing import Iterable
 
 from llamactl.core.lifecycle import ServerInfo, ServerState
@@ -75,13 +76,13 @@ def _parse_fdinfo_file(path: str) -> tuple[str | None, dict[str, int]]:
         return (None, {})
 
 
-def _sum_unique_clients(
+def _dedupe_clients(
     parsed: Iterable[tuple[str | None, dict[str, int]]],
-) -> int:
-    """Sum memory fields across DRM clients, deduplicating by client-id.
+) -> dict[str, dict[str, int]]:
+    """Map of unique DRM client-id → memory fields (first seen wins).
 
-    Fds sharing a drm-client-id are counted once (first seen wins). Entries with
-    no client-id are each treated as unique. Entries with no fields are ignored.
+    Fds sharing a drm-client-id are kept once. Entries with no client-id are
+    each treated as unique (synthetic keys). Entries with no fields are ignored.
     """
     seen_clients: dict[str, dict[str, int]] = {}
     anon_counter = 0
@@ -97,25 +98,70 @@ def _sum_unique_clients(
         if key not in seen_clients:
             seen_clients[key] = fields
 
-    return sum(sum(fields.values()) for fields in seen_clients.values())
+    return seen_clients
 
 
-def read_vram_kib(pid: str, fdinfo_root: str = "/proc") -> int | None:
+@dataclass(frozen=True, slots=True)
+class VramSnapshot:
+    """A point-in-time VRAM reading, broken down for leak investigation.
+
+    total_kib: sum of all memory fields across unique clients.
+    by_field:  per memory category (drm-memory-vram, drm-memory-gtt, …), summed.
+    by_client: per drm-client-id breakdown (first-seen fields).
     """
-    Sum all drm-*-memory-* KiB fields across unique DRM clients for PID.
+    total_kib: int
+    by_field: dict[str, int]
+    by_client: dict[str, dict[str, int]]
+
+
+@dataclass(frozen=True, slots=True)
+class VramDelta:
+    """Signed change between two VramSnapshots."""
+    total_kib: int
+    by_field: dict[str, int]
+
+
+def _snapshot_from_parsed(
+    parsed: Iterable[tuple[str | None, dict[str, int]]],
+) -> VramSnapshot:
+    """Aggregate parsed fdinfo into a VramSnapshot (dedup by client-id)."""
+    clients = _dedupe_clients(parsed)
+    by_field: dict[str, int] = {}
+    for fields in clients.values():
+        for key, val in fields.items():
+            by_field[key] = by_field.get(key, 0) + val
+    return VramSnapshot(
+        total_kib=sum(by_field.values()),
+        by_field=by_field,
+        by_client=clients,
+    )
+
+
+def vram_delta(before: VramSnapshot, after: VramSnapshot) -> VramDelta:
+    """Per-category signed change (after − before), for `--delta`-style leak checks."""
+    keys = set(before.by_field) | set(after.by_field)
+    by_field = {
+        key: after.by_field.get(key, 0) - before.by_field.get(key, 0)
+        for key in keys
+    }
+    return VramDelta(total_kib=after.total_kib - before.total_kib, by_field=by_field)
+
+
+def read_vram_snapshot(pid: str, fdinfo_root: str = "/proc") -> VramSnapshot | None:
+    """
+    Per-client / per-category VRAM snapshot for PID, or None.
 
     Reads {fdinfo_root}/{pid}/fdinfo/, parses each fd, deduplicates by
-    drm-client-id, and sums memory fields.
+    drm-client-id, and aggregates memory fields.
 
     Returns:
-      - int  → KiB in use (0 if the pid has no DRM fds)
-      - None → the fdinfo could not be read because of a permission error
-               (e.g. a root-owned container process read by a non-root user).
-               None lets callers surface "unavailable" rather than show a
-               misleading 0.
+      - VramSnapshot → breakdown (total_kib == 0 if the pid has no DRM fds)
+      - None         → fdinfo unreadable due to a permission error (e.g. a
+                       root-owned container process read by a non-root user),
+                       so callers can surface "unavailable" rather than a 0.
 
-    A missing pid (process gone) returns 0, not None — liveness is handled
-    separately by the caller.
+    A missing pid (process gone) returns an empty snapshot, not None — liveness
+    is handled separately by the caller.
     """
     fdinfo_dir = os.path.join(fdinfo_root, pid, "fdinfo")
 
@@ -124,9 +170,20 @@ def read_vram_kib(pid: str, fdinfo_root: str = "/proc") -> int | None:
     except PermissionError:
         return None
     except OSError:
-        return 0
+        return _snapshot_from_parsed([])
 
-    return _sum_unique_clients(_parse_fdinfo_file(os.path.join(fdinfo_dir, e)) for e in entries)
+    return _snapshot_from_parsed(
+        _parse_fdinfo_file(os.path.join(fdinfo_dir, e)) for e in entries
+    )
+
+
+def read_vram_kib(pid: str, fdinfo_root: str = "/proc") -> int | None:
+    """Total VRAM (KiB) for PID, or None if unreadable (permission error).
+
+    Thin total-only view over read_vram_snapshot; see it for the full contract.
+    """
+    snap = read_vram_snapshot(pid, fdinfo_root)
+    return None if snap is None else snap.total_kib
 
 
 # Lists every fdinfo file inside the container and prints each one's contents
@@ -142,18 +199,16 @@ _CONTAINER_FDINFO_SCRIPT = (
 _FDINFO_DELIMITER = "@@@"
 
 
-def read_container_vram_kib(
+def read_container_vram_snapshot(
     container_name: str,
     runtime: str,
     runner: Runner = _default_runner,
-) -> int | None:
-    """Sum DRM memory of all processes inside a running container.
+) -> VramSnapshot | None:
+    """Per-client / per-category VRAM snapshot for a running container, or None.
 
     Runs `runtime exec <container> sh -c <script>` so fdinfo is read as the
-    container's own (root) user, sidestepping the host permission wall.
-
-    Returns summed KiB, or None if the exec failed (container not running,
-    runtime error) so the caller can surface "unavailable".
+    container's own (root) user, sidestepping the host permission wall. Returns
+    None if the exec failed (container not running, runtime error).
     """
     result = runner([runtime, "exec", container_name, "sh", "-c", _CONTAINER_FDINFO_SCRIPT])
 
@@ -171,11 +226,26 @@ def read_container_vram_kib(
         _, _, content = chunk.partition("\n")
         parsed.append(_parse_fdinfo_text(content))
 
-    return _sum_unique_clients(parsed)
+    return _snapshot_from_parsed(parsed)
 
 
-def read_server_vram_kib(server: ServerInfo, runtime: str | None) -> int | None:
-    """VRAM (KiB) for a managed server, or None if it cannot be read.
+def read_container_vram_kib(
+    container_name: str,
+    runtime: str,
+    runner: Runner = _default_runner,
+) -> int | None:
+    """Total VRAM (KiB) inside a running container, or None if the exec failed.
+
+    Thin total-only view over read_container_vram_snapshot.
+    """
+    snap = read_container_vram_snapshot(container_name, runtime, runner=runner)
+    return None if snap is None else snap.total_kib
+
+
+def read_server_vram_snapshot(
+    server: ServerInfo, runtime: str | None
+) -> VramSnapshot | None:
+    """Per-client / per-category VRAM snapshot for a managed server, or None.
 
     Native: read the server's own /proc/<pid>/fdinfo.
     Container: read fdinfo inside the container via `exec` (needs runtime).
@@ -183,10 +253,19 @@ def read_server_vram_kib(server: ServerInfo, runtime: str | None) -> int | None:
     if server.mode == "native":
         if server.pid is None:
             return None
-        return read_vram_kib(str(server.pid))
+        return read_vram_snapshot(str(server.pid))
     if server.container_name and runtime is not None:
-        return read_container_vram_kib(server.container_name, runtime)
+        return read_container_vram_snapshot(server.container_name, runtime)
     return None
+
+
+def read_server_vram_kib(server: ServerInfo, runtime: str | None) -> int | None:
+    """Total VRAM (KiB) for a managed server, or None if it cannot be read.
+
+    Thin total-only view over read_server_vram_snapshot.
+    """
+    snap = read_server_vram_snapshot(server, runtime)
+    return None if snap is None else snap.total_kib
 
 
 def check_health(port: int, timeout: float = 2.0) -> ServerState:

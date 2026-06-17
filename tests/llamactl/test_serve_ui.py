@@ -378,6 +378,131 @@ async def test_serve_form_has_artifact_select_from_registry(tmp_path: Path) -> N
         assert "llama-cpp-gfx1031:b10" in values
 
 
+def _repo_with_model(tmp_path: Path) -> Path:
+    (tmp_path / "configs" / "models").mkdir(parents=True)
+    # Point the GGUF caches at empty tmp dirs so VRAM estimation never globs the
+    # real ~/.cache (a loose quant could otherwise resolve to an unrelated model).
+    (tmp_path / "hf").mkdir()
+    (tmp_path / "llama").mkdir()
+    (tmp_path / "configs" / "llamactl.toml").write_text(
+        'default_backend = "rocm"\ndefault_mode = "container"\nport = 8080\n'
+        'vram_budget_gb = 11.0\nname_prefix = "llamactl"\n'
+        f'hf_cache = "{tmp_path / "hf"}"\nllama_cache = "{tmp_path / "llama"}"\n'
+    )
+    (tmp_path / "configs" / "models" / "m.toml").write_text(
+        'name = "M"\nhf = "org/m:UD-Q5_K_XL"\n\n[settings]\nctx_size = 2048\n'
+    )
+    (tmp_path / "state").mkdir()
+    return tmp_path
+
+
+@pytest.mark.asyncio
+async def test_what_if_table_present(repo_root: Path) -> None:
+    """The Serve tab exposes a VRAM what-if table (ports vram_calc.py's tables)."""
+    from llamactl.ui.app import LlamaCtlApp
+    from textual.widgets import DataTable
+
+    app = LlamaCtlApp(repo_root=repo_root)
+    async with app.run_test(headless=True) as pilot:
+        assert app.query_one("#what-if-table", DataTable) is not None
+
+
+@pytest.mark.asyncio
+async def test_what_if_populates_from_sweep(tmp_path: Path, monkeypatch) -> None:
+    """Selecting a model fills the what-if table with one row per swept ctx size."""
+    from llamactl.ui.app import LlamaCtlApp
+    from llamactl.core.estimate import Estimate, SweepCell, SWEEP_CACHE_TYPES
+    from textual.widgets import DataTable, Select
+    import llamactl.core.estimate as est_mod
+
+    def fake_sweep(model, base_settings, global_cfg, **kw):
+        cells = []
+        for ctx in (8192, 16384):
+            for ct in SWEEP_CACHE_TYPES:
+                est = Estimate(total_gb=5.0, model_gb=3.0, kv_gb=1.0,
+                               compute_gb=0.9, overhead_gb=0.6)
+                cells.append(SweepCell(ctx, ct, est, "ok"))
+        return cells
+
+    monkeypatch.setattr(est_mod, "sweep_vram", fake_sweep)
+
+    app = LlamaCtlApp(repo_root=_repo_with_model(tmp_path))
+    async with app.run_test(headless=True) as pilot:
+        await pilot.pause()
+        sel = app.query_one("#model-select", Select)
+        sel.value = "m"
+        await pilot.pause()
+        table = app.query_one("#what-if-table", DataTable)
+        assert table.row_count == 2  # one row per swept ctx size
+
+
+@pytest.mark.asyncio
+async def test_vram_snapshot_then_delta(tmp_path: Path, monkeypatch) -> None:
+    """Two snapshot clicks capture a baseline then show the per-request delta —
+    the vram_inspect.py --delta workflow."""
+    from llamactl.core.lifecycle import ServerInfo
+    from llamactl.core.monitor import VramSnapshot
+    from llamactl.ui.app import LlamaCtlApp
+    import llamactl.core.lifecycle as lc_mod
+    import llamactl.core.monitor as mon_mod
+    from textual.widgets import Static
+
+    fake_info = ServerInfo(
+        model_id="m", backend="rocm", preset="", mode="native",
+        host="0.0.0.0", port=8080, started_at="t", pid=1234,
+    )
+    monkeypatch.setattr(lc_mod, "find_running", lambda *_a, **_kw: fake_info)
+
+    snaps = iter([
+        VramSnapshot(total_kib=1_000_000, by_field={"drm-memory-vram": 1_000_000}, by_client={}),
+        VramSnapshot(total_kib=2_048_576, by_field={"drm-memory-vram": 2_048_576}, by_client={}),
+    ])
+    monkeypatch.setattr(mon_mod, "read_server_vram_snapshot", lambda *_a, **_kw: next(snaps))
+
+    app = LlamaCtlApp(repo_root=_repo_with_model(tmp_path))
+    async with app.run_test(headless=True) as pilot:
+        from llamactl.ui.screens.serve import ServeScreen
+        serve = app.query_one(ServeScreen)
+        assert serve.has_running_server
+
+        await serve._action_vram_snapshot()        # baseline
+        assert serve._vram_baseline is not None
+        await serve._action_vram_snapshot()         # delta
+        assert serve._vram_baseline is None         # reset after delta
+        line = str(app.query_one("#vram-delta", Static).render())
+        assert "Δ" in line  # delta shown
+
+
+@pytest.mark.asyncio
+async def test_serve_log_pane_has_markup_enabled(repo_root: Path) -> None:
+    """The Serve log pane must interpret console markup, else status writes show
+    literal '[green]...[/green]' instead of coloured text."""
+    from llamactl.ui.app import LlamaCtlApp
+    from textual.widgets import RichLog
+
+    app = LlamaCtlApp(repo_root=repo_root)
+    async with app.run_test(headless=True) as pilot:
+        assert app.query_one("#log-pane", RichLog).markup is True
+
+
+@pytest.mark.asyncio
+async def test_vram_snapshot_without_server_is_noop(repo_root: Path, monkeypatch) -> None:
+    """Capturing a snapshot with no server running warns and keeps baseline empty."""
+    import llamactl.core.lifecycle as lc_mod
+    from llamactl.ui.app import LlamaCtlApp
+
+    # Isolate from any server actually running on the dev machine.
+    monkeypatch.setattr(lc_mod, "find_running", lambda *_a, **_kw: None)
+
+    app = LlamaCtlApp(repo_root=repo_root)
+    async with app.run_test(headless=True) as pilot:
+        from llamactl.ui.screens.serve import ServeScreen
+        serve = app.query_one(ServeScreen)
+        assert not serve.has_running_server
+        await serve._action_vram_snapshot()  # must not raise
+        assert serve._vram_baseline is None
+
+
 @pytest.mark.asyncio
 async def test_blank_selects_return_none_not_sentinel(tmp_path: Path) -> None:
     from llamactl.ui.app import LlamaCtlApp
