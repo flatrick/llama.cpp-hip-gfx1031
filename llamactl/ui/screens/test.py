@@ -155,7 +155,7 @@ class TestScreen(Widget):
         try:
             pre = self.query_one("#test-precondition", Static)
             btn = self.query_one("#btn-run-test", Button)
-        except Exception:
+        except NoMatches:
             return
         if server is None:
             pre.update("[yellow]Start a server on the Serve tab first.[/yellow]")
