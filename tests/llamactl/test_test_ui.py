@@ -224,6 +224,53 @@ async def test_verdict_detail_markup_is_escaped(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_progress_and_peak_update_from_messages(tmp_path, monkeypatch):
+    from llamactl.ui.app import LlamaCtlApp
+    import llamactl.ui.screens.test as test_mod
+    from llamactl.core.lifecycle import ServerInfo
+    from llamactl.ui.screens.test import TestScreen, _Progress, _PeakStat
+    from textual.widgets import Static, TabbedContent
+
+    server = ServerInfo(
+        model_id="m", backend="rocm", preset="", mode="native",
+        host="0.0.0.0", port=8080, started_at="", pid=1234,
+    )
+    monkeypatch.setattr(test_mod, "find_running", lambda *_a, **_kw: server)
+
+    app = LlamaCtlApp(repo_root=_repo_with_model(tmp_path))
+    async with app.run_test(headless=True) as pilot:
+        app.query_one(TabbedContent).active = "test"
+        await pilot.pause()
+        screen = app.query_one(TestScreen)
+
+        screen.post_message(_Progress("sustained — round 7"))
+        screen.post_message(_PeakStat(9.5, 11.0))
+        await pilot.pause()
+
+        assert "round 7" in str(screen.query_one("#test-progress", Static).render())
+        peak_text = str(screen.query_one("#test-peak", Static).render())
+        assert "9.5" in peak_text and "11.0" in peak_text
+
+
+@pytest.mark.asyncio
+async def test_stopped_verdict_renders_neutrally(tmp_path):
+    from llamactl.ui.app import LlamaCtlApp
+    from llamactl.ui.screens.test import TestScreen, _Verdict
+    from llamactl.core.oomtest import OomTestResult
+    from textual.widgets import Static, TabbedContent
+
+    app = LlamaCtlApp(repo_root=_repo_with_model(tmp_path))
+    async with app.run_test(headless=True) as pilot:
+        app.query_one(TabbedContent).active = "test"
+        await pilot.pause()
+        screen = app.query_one(TestScreen)
+        screen.post_message(_Verdict(OomTestResult("STOPPED", None, None, None, "Stopped by user.")))
+        await pilot.pause()
+        text = str(screen.query_one("#verdict", Static).render())
+        assert "STOPPED" in text
+
+
+@pytest.mark.asyncio
 async def test_test_pane_live_vram_gauge_updates(tmp_path, monkeypatch):
     """The Test pane's VRAM gauge updates from read_server_vram_kib during a run."""
     from llamactl.ui.app import LlamaCtlApp

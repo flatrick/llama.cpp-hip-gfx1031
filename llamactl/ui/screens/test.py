@@ -39,6 +39,23 @@ class _Verdict(Message):
         super().__init__()
 
 
+class _Progress(Message):
+    """Current phase/round line for the progress indicator."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        super().__init__()
+
+
+class _PeakStat(Message):
+    """A peak-VRAM observation (gb) with the budget (gb) for headroom display."""
+
+    def __init__(self, peak_gb: float | None, budget_gb: float | None) -> None:
+        self.peak_gb = peak_gb
+        self.budget_gb = budget_gb
+        super().__init__()
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -76,6 +93,7 @@ class TextualReporter:
 
     def start_phase(self, phase) -> None:
         self._screen.post_message(_PhaseRow(("", f"── {phase.title} ──", "", "", "", "", "")))
+        self._screen.post_message(_Progress(phase.title))
 
     def record_sample(self, phase_key, sample, warn_at) -> None:
         req = sample.request
@@ -90,6 +108,8 @@ class TextualReporter:
             _fmt(sample.post_vram_gb),
             sample.status,
         )))
+        self._screen.post_message(_Progress(f"{phase_key} — {sample.label}"))
+        self._screen.post_message(_PeakStat(sample.peak_vram_gb, warn_at))
 
     def finish_phase(self, phase) -> None:
         return None
@@ -122,6 +142,7 @@ class TestScreen(Widget):
         self._test_active = False      # whether a test run is in progress
         self._cancel_evt = threading.Event()  # cross-thread cancel signal
         self._vram_timer = None
+        self._peak_gb: float | None = None
 
     def compose(self) -> ComposeResult:
         yield Label("OOM boundary check", id="test-title")
@@ -135,6 +156,8 @@ class TestScreen(Widget):
         )
         yield table
         yield Static("", id="verdict")
+        yield Static("", id="test-progress")
+        yield Static("", id="test-peak")
         yield Static(
             "[dim]Quick mode runs a reduced subset; uncheck it for a fuller pass "
             "(more sustained/cold/defrag rounds — takes longer). For the complete "
@@ -224,9 +247,15 @@ class TestScreen(Widget):
         self._poll_test_vram()
         # Capture app state on the UI thread; never read self.app from the worker.
         global_cfg = self.app._global_cfg
+        self._peak_gb = None
         try:
             self.query_one("#test-table", DataTable).clear()
             self.query_one("#verdict", Static).update("[dim]Running…[/dim]")
+        except NoMatches:
+            pass
+        try:
+            self.query_one("#test-progress", Static).update("")
+            self.query_one("#test-peak", Static).update("")
         except NoMatches:
             pass
         button.label = "Stop"
@@ -270,12 +299,37 @@ class TestScreen(Widget):
         except NoMatches:
             pass
 
+    @on(_Progress)
+    def _on_progress(self, message: _Progress) -> None:
+        try:
+            self.query_one("#test-progress", Static).update(message.text)
+        except NoMatches:
+            pass
+
+    @on(_PeakStat)
+    def _on_peak(self, message: _PeakStat) -> None:
+        if message.peak_gb is not None:
+            if self._peak_gb is None or message.peak_gb > self._peak_gb:
+                self._peak_gb = message.peak_gb
+        if self._peak_gb is None:
+            return
+        budget = message.budget_gb
+        try:
+            label = self.query_one("#test-peak", Static)
+        except NoMatches:
+            return
+        if budget is not None:
+            headroom = budget - self._peak_gb
+            label.update(f"Peak {self._peak_gb:.1f} / budget {budget:.1f} GiB (headroom {headroom:.1f})")
+        else:
+            label.update(f"Peak {self._peak_gb:.1f} GiB")
+
     @on(_Verdict)
     def _on_verdict(self, message: _Verdict) -> None:
         result = message.result
         if result.verdict.startswith("OK"):
             colour = "green"
-        elif result.verdict == "WARN":
+        elif result.verdict in ("WARN", "STOPPED"):
             colour = "yellow"
         else:
             colour = "red"
