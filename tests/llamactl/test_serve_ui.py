@@ -67,6 +67,49 @@ async def test_model_selector_populated_from_models(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_serve_model_select_lists_all_models_on_startup(tmp_path: Path) -> None:
+    """Regression: the Serve model picker is built in _LaunchForm.compose (before the
+    app loads models), so the app must refresh it on_mount. Two real models => >= 2
+    options; the bug left only the blank placeholder (1)."""
+    from llamactl.ui.app import LlamaCtlApp
+    from textual.widgets import Select
+
+    (tmp_path / "configs" / "models").mkdir(parents=True)
+    (tmp_path / "configs" / "llamactl.toml").write_text(
+        'default_backend = "rocm"\ndefault_mode = "container"\nport = 8080\n'
+        'vram_budget_gb = 11.0\nname_prefix = "llamactl"\n'
+    )
+    for mid in ("alpha", "beta"):
+        (tmp_path / "configs" / "models" / f"{mid}.toml").write_text(
+            f'name = "{mid}"\nhf = "org/{mid}:f"\n\n[settings]\nctx_size = 4096\n'
+        )
+    (tmp_path / "state").mkdir()
+
+    app = LlamaCtlApp(repo_root=tmp_path)
+    async with app.run_test(headless=True) as pilot:
+        await pilot.pause()
+        sel = app.query_one("#model-select", Select)
+        assert len(sel._options) >= 2
+
+
+@pytest.mark.asyncio
+async def test_serve_dropdowns_are_labeled(repo_root: Path) -> None:
+    """Each launch-form dropdown carries a visible Label so the controls aren't
+    unmarked; the Mode label spells out the container/native choice."""
+    from llamactl.ui.app import LlamaCtlApp
+    from textual.widgets import Label
+
+    app = LlamaCtlApp(repo_root=repo_root)
+    async with app.run_test(headless=True) as pilot:
+        await pilot.pause()
+        for lbl_id in ("#lbl-model", "#lbl-backend", "#lbl-mode",
+                       "#lbl-preset", "#lbl-image"):
+            assert app.query_one(lbl_id, Label) is not None
+        mode_label = str(app.query_one("#lbl-mode", Label).render()).lower()
+        assert "container" in mode_label and "native" in mode_label
+
+
+@pytest.mark.asyncio
 async def test_argv_preview_widget_is_present(tmp_path: Path) -> None:
     from llamactl.ui.app import LlamaCtlApp
     from textual.widgets import Static

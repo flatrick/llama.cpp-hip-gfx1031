@@ -47,8 +47,17 @@ class LlamaCtlApp(App):
         except Exception as exc:
             self._artifacts = []
             self.notify(f"Registry load failed: {exc}", severity="warning", timeout=5)
+        # Serve's _LaunchForm and ModelsScreen composed before this runs (child
+        # on_mount precedes app on_mount), so they captured the empty initial
+        # _models — push the now-loaded configs into both.
         try:
-            self.query_one(_LaunchForm).refresh_artifact_options()
+            form = self.query_one(_LaunchForm)
+            form.refresh_artifact_options()
+            form.refresh_model_options()
+        except Exception:
+            pass
+        try:
+            self.query_one(ModelsScreen)._reload_model_list()
         except Exception:
             pass
         # The Builds table is built in BuildsScreen.on_mount, which runs before

@@ -198,23 +198,28 @@ class _LaunchForm(Widget):
     def compose(self) -> ComposeResult:
         model_options = [(m.name, m.id) for m in self._models]
 
+        yield Label("Model", id="lbl-model")
         if model_options:
             yield Select(options=model_options, id="model-select")
         else:
             yield Select(options=[], id="model-select", allow_blank=True)
 
+        yield Label("Backend", id="lbl-backend")
         yield Select(
             options=[("ROCm", "rocm"), ("Vulkan", "vulkan")],
             id="backend-select",
             value="rocm",
         )
+        yield Label("Mode (container / native)", id="lbl-mode")
         yield Select(
             options=[("Container", "container"), ("Native", "native")],
             id="mode-select",
             value="container",
         )
+        yield Label("Preset (optional)", id="lbl-preset")
         yield Select(options=[], id="preset-select", allow_blank=True)
 
+        yield Label("Image override (optional)", id="lbl-image")
         # Artifact picker — image tags from the registry; blank = default image.
         app = self.app
         artifacts = getattr(app, "_artifacts", [])

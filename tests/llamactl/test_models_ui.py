@@ -52,6 +52,23 @@ async def test_models_tab_lists_and_loads_model(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_models_tab_lists_configs_on_startup(tmp_path: Path) -> None:
+    """Regression: the model list must be populated on startup. ModelsScreen.on_mount
+    runs before LlamaCtlApp.on_mount loads app._models, so the app must re-render the
+    list afterward (previously it didn't, leaving the Models tab empty)."""
+    from llamactl.ui.app import LlamaCtlApp
+    from textual.widgets import OptionList
+
+    app = LlamaCtlApp(repo_root=_repo(tmp_path))
+    async with app.run_test(headless=True) as pilot:
+        app.query_one("TabbedContent").active = "models"
+        await pilot.pause()
+        ol = app.query_one("#model-list", OptionList)
+        assert ol.option_count == 1
+        assert ol.get_option_at_index(0).id == "m"
+
+
+@pytest.mark.asyncio
 async def test_edit_value_sets_dirty_and_save_writes(tmp_path: Path) -> None:
     from llamactl.ui.app import LlamaCtlApp
     from llamactl.ui.screens.models import ModelsScreen
