@@ -154,6 +154,36 @@ async def test_unmount_sets_cancel_signal(tmp_path):
         assert screen._cancel_evt.is_set()
 
 
+def test_finish_phase_surfaces_details_and_log():
+    """A failed Boundary phase reports only via details/log_excerpt (no samples).
+    finish_phase must surface those as table rows, else the TUI shows no reason."""
+    from llamactl.ui.screens.test import TextualReporter, _PhaseRow
+    from stress_harness.models import PhaseResult
+
+    posted = []
+
+    class _FakeScreen:
+        def post_message(self, msg):
+            posted.append(msg)
+
+    reporter = TextualReporter(_FakeScreen())
+    phase = PhaseResult(key="boundary", title="Phase 5: Boundary")
+    phase.success = False
+    phase.details = [
+        ("HTTP 400 received", "FAIL (got HTTP 500)"),
+        ("Error message", "OK"),
+    ]
+    phase.log_excerpt = ["llama error: context size exceeded"]
+
+    reporter.finish_phase(phase)
+
+    rows = [m.cells for m in posted if isinstance(m, _PhaseRow)]
+    flat = " ".join(cell for row in rows for cell in row)
+    assert "HTTP 400 received" in flat
+    assert "FAIL (got HTTP 500)" in flat
+    assert "context size exceeded" in flat
+
+
 @pytest.mark.asyncio
 async def test_quick_checkbox_default_checked_and_passed(tmp_path, monkeypatch):
     """The Quick-mode checkbox defaults to checked and its value is passed as quick."""

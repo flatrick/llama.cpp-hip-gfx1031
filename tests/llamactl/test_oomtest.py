@@ -21,38 +21,48 @@ def test_build_vram_monitor_native_uses_pid(monkeypatch):
     )
     server = ServerInfo(model_id="m", backend="rocm", preset="", mode="native",
                         host="127.0.0.1", port=8080, started_at="", pid=4242)
-    mon = build_vram_monitor(server, runtime=None, get_pid=None)
+    mon = build_vram_monitor(server, runtime=None)
     assert abs(mon.read() - 2.0) < 1e-9
 
 
-def test_build_vram_monitor_container_resolves_pid_once(monkeypatch):
-    calls = {"inspect": 0}
-
-    def fake_get_pid(name, rt, **kw):
-        calls["inspect"] += 1
-        return 999
-
+def test_build_vram_monitor_container_uses_exec_reader(monkeypatch):
+    """Container mode reads fdinfo inside the container (no host pid, no sudo)."""
     monkeypatch.setattr(
-        "llamactl.core.oomtest.read_vram_kib",
-        lambda pid, **kw: 1024 * 1024 if pid == "999" else 0,  # 1 GiB
+        "llamactl.core.oomtest.read_container_vram_kib",
+        lambda name, runtime, **kw: 1024 * 1024 if name == "llamactl-m" else None,  # 1 GiB
     )
     server = ServerInfo(model_id="m", backend="rocm", preset="", mode="container",
                         host="0.0.0.0", port=8080, started_at="",
                         container_name="llamactl-m")
-    mon = build_vram_monitor(server, runtime="podman", get_pid=fake_get_pid)
+    mon = build_vram_monitor(server, runtime="podman")
     assert abs(mon.read() - 1.0) < 1e-9
-    mon.read()
-    mon.read()
-    assert calls["inspect"] == 1  # resolved once, not per read
 
 
-def test_build_vram_monitor_returns_none_when_no_pid(monkeypatch):
+def test_build_vram_monitor_container_uses_slower_interval(monkeypatch):
+    """Container mode samples less often (exec per tick is heavier than a file read)."""
+    monkeypatch.setattr(
+        "llamactl.core.oomtest.read_container_vram_kib",
+        lambda name, runtime, **kw: 0,
+    )
     server = ServerInfo(model_id="m", backend="rocm", preset="", mode="container",
                         host="0.0.0.0", port=8080, started_at="",
                         container_name="llamactl-m")
-    mon = build_vram_monitor(server, runtime="podman",
-                             get_pid=lambda *a, **k: None)
-    assert mon.read() is None
+    mon = build_vram_monitor(server, runtime="podman")
+    assert mon.sample_interval_ms == 1000
+
+
+def test_build_vram_monitor_container_none_without_runtime():
+    server = ServerInfo(model_id="m", backend="rocm", preset="", mode="container",
+                        host="0.0.0.0", port=8080, started_at="",
+                        container_name="llamactl-m")
+    import llamactl.core.oomtest as oom
+    orig = oom.find_runtime
+    oom.find_runtime = lambda: None
+    try:
+        mon = build_vram_monitor(server, runtime=None)
+        assert mon.read() is None
+    finally:
+        oom.find_runtime = orig
 
 
 def test_build_vram_monitor_native_no_pid_returns_none():
@@ -215,6 +225,38 @@ def test_run_phases_runs_full_chain_when_all_pass():
     assert vram_available is True
 
 
+def test_run_phases_boundary_uses_ctx_size_not_last_ok():
+    """The boundary phase must oversize against the real ctx_size, not the ramp's
+    last_ok (~0.95*ctx). Using last_ok means the prompt never exceeds a large
+    context, so the server accepts it and boundary spuriously 'fails'."""
+    captured = {}
+
+    class _BoundarySpy:
+        def make(self, *_a, **_kw):
+            class _Runner:
+                def run(self, arg):
+                    captured["ctx"] = arg
+                    return _phase("boundary", success=True, samples=[], last_ok=None)
+            return _Runner()
+
+    specs = {
+        "ramp": _FakePhase("ramp", last_ok=1000, peak=9.0),
+        "sustained": _FakePhase("sustained", peak=9.0),
+        "cold_start": _FakePhase("cold-start", peak=9.0),
+        "defrag": _FakePhase("defrag", peak=9.0),
+        "boundary": _BoundarySpy(),
+    }
+    run_phases(
+        config_steps=[10],
+        phase_set=_phase_set(specs),
+        cancel=lambda: False,
+        reporter=_RecordingReporter(),
+        ctx_size=65536,
+        **_noop_collaborators(),
+    )
+    assert captured["ctx"] == 65536  # real ctx_size, not last_ok (1000)
+
+
 def test_run_phases_short_circuits_on_ramp_failure():
     specs = {
         "ramp": _FakePhase("ramp", success=False),
@@ -331,6 +373,16 @@ def test_run_oom_check_returns_stopped_when_cancelled(monkeypatch):
         server, _NullReporter(), global_cfg=_Cfg(), cancel=lambda: True
     )
     assert result.verdict == "STOPPED"
+
+
+def test_vram_monitor_default_sample_interval():
+    mon = VramMonitor(lambda: 1.0, "test")
+    assert mon.sample_interval_ms == 200
+
+
+def test_vram_monitor_custom_sample_interval():
+    mon = VramMonitor(lambda: 1.0, "test", sample_interval_ms=1000)
+    assert mon.sample_interval_ms == 1000
 
 
 def test_run_oom_check_quick_flag_controls_rounds(monkeypatch):

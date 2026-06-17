@@ -27,8 +27,13 @@ from stress_harness.server import LlamaServerClient
 
 from llamactl.core.config import GlobalConfig
 from llamactl.core.lifecycle import ServerInfo
-from llamactl.core.monitor import read_vram_kib
-from llamactl.core.runtime import find_runtime, get_container_pid
+from llamactl.core.monitor import read_container_vram_kib, read_vram_kib
+from llamactl.core.runtime import find_runtime
+
+
+# Container VRAM is read via `exec` (per tick). That is far heavier than a
+# native /proc read, so sample it less often than the 200ms native default.
+CONTAINER_VRAM_SAMPLE_INTERVAL_MS = 1000
 
 
 class Reporter(Protocol):
@@ -49,35 +54,39 @@ class Reporter(Protocol):
 def build_vram_monitor(
     server: ServerInfo,
     runtime: str | None,
-    get_pid: Callable[[str, str], int | None] | None = get_container_pid,
 ) -> VramMonitor:
     """A harness VramMonitor whose reader reports the managed server's VRAM in GiB.
 
-    PID resolved ONCE up front (container inspect is a subprocess; the 200ms
-    PeakVramSampler must not re-resolve per tick).
+    Native: read the server's own /proc/<pid>/fdinfo (cheap, 200ms cadence).
+    Container: read fdinfo *inside* the container via `exec` (no host sudo). That
+    exec is heavy, so use a slower sample cadence.
     """
     if server.mode == "native":
         pid = str(server.pid) if server.pid else None
         mode = f"per-process native (PID: {pid or 'unknown'})"
-    else:
-        rt = runtime or find_runtime()
-        resolved = (
-            get_pid(server.container_name, rt)
-            if (rt and server.container_name and get_pid)
-            else None
-        )
-        pid = str(resolved) if resolved else None
-        mode = f"per-process container (PID: {pid or 'unknown'})"
+
+        def _reader() -> float | None:
+            if pid is None:
+                return None
+            kib = read_vram_kib(pid)
+            return kib / 1024 ** 2 if kib else None
+
+        return VramMonitor(_reader, mode)
+
+    rt = runtime or find_runtime()
+    cname = server.container_name
+    mode = f"per-container exec (container: {cname or 'unknown'})"
 
     def _reader() -> float | None:
-        if pid is None:
+        if not (rt and cname):
             return None
-        kib = read_vram_kib(pid)
-        # kib is None when fdinfo is unreadable (e.g. permission denied) and 0
-        # when there is no DRM memory; both mean "no usable reading" here.
+        kib = read_container_vram_kib(cname, rt)
+        # None = unreadable, 0 = no DRM memory; both mean "no usable reading".
         return kib / 1024 ** 2 if kib else None
 
-    return VramMonitor(_reader, mode)
+    return VramMonitor(
+        _reader, mode, sample_interval_ms=CONTAINER_VRAM_SAMPLE_INTERVAL_MS
+    )
 
 
 class NativeLogReader:
@@ -216,6 +225,7 @@ def run_phases(
     runtime_inspector: Any,
     runtime_info: RuntimeInfo,
     config: StressConfig | None = None,
+    ctx_size: int | None = None,
 ) -> tuple[list[PhaseResult], float | None, bool]:
     """Run ramp → sustained → cold-start → defrag → boundary.
 
@@ -266,11 +276,14 @@ def run_phases(
         if not result.success or cancel():
             return _result()
 
-    # Phase 5: Boundary
+    # Phase 5: Boundary — must oversize against the REAL context window. Prefer an
+    # explicit override, then the server-detected ctx_size; fall back to last_ok
+    # only when ctx_size is unknown. (Using last_ok ~0.95*ctx never exceeds a large
+    # context, so the server accepts the prompt and boundary spuriously fails.)
     ctx = (
         config.ctx_size_override
         if (config and config.ctx_size_override)
-        else last_ok
+        else (ctx_size if ctx_size else last_ok)
     )
     boundary = phase_set.boundary(**kw).run(ctx)
     _track(boundary)
@@ -341,6 +354,7 @@ def run_oom_check(
         runtime_inspector=inspector,
         runtime_info=runtime_info,
         config=config,
+        ctx_size=ctx_size,
     )
     if cancel():
         return OomTestResult(
