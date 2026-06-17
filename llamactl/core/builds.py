@@ -408,6 +408,7 @@ def run_build(
                 binary_path=str(out_dir / "llama-server"),
             )
         else:
+            assert rt is not None  # set + checked in the container branch above
             tag = image_tag_for(request.target, request.ref)
             yield from build_image(request.target, context, tag, repo_root, rt,
                                    stream_runner, no_cache=request.no_cache)

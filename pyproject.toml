@@ -1,2 +1,47 @@
 [tool.pytest.ini_options]
 asyncio_mode = "strict"
+
+[tool.pyright]
+# Type-checking config for the repo. Run with: `pyright` (uses this section).
+pythonVersion = "3.14"
+typeCheckingMode = "standard"
+
+include = [
+    "llamactl",
+    "stress_harness",
+    "tests",
+    "run.py",
+    "vram_calc.py",
+    "vram_inspect.py",
+    "stress_test.py",
+    "test_run.py",
+    "conftest.py",
+]
+exclude = [
+    "**/__pycache__",
+    "llama.cpp-src",   # vendored upstream submodule — not ours to type-check
+    "state",           # runtime artifacts (builds, logs, registry)
+    "docs",
+    "build",
+]
+
+# pyperclip ships without type stubs and is an optional clipboard dep; missing
+# stub source is expected, not a problem to flag.
+reportMissingModuleSource = false
+
+# Tests intentionally use loose/partial stand-ins: dummy configs in place of
+# GlobalConfig, hand-built HTTPError(url=None, ...), monkeypatched private
+# attributes, and reads of widget internals (_options, _model_map). These are
+# deliberate for white-box testing, so the strict argument/attribute checks add
+# noise without catching real production bugs. Relax them for the tests tree only.
+[[tool.pyright.executionEnvironments]]
+root = "tests"
+# Keep the repo root on the import path so tests resolve the top-level
+# `llamactl` / `stress_harness` packages (the env root would otherwise be tests/).
+extraPaths = ["."]
+reportArgumentType = false
+reportAttributeAccessIssue = false
+reportOptionalMemberAccess = false
+reportOptionalSubscript = false
+reportOptionalOperand = false
+reportOperatorIssue = false

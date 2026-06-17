@@ -93,7 +93,7 @@ class LlamaCtlApp(App):
         except NoMatches:
             pass
 
-    def action_quit(self) -> None:
+    def action_quit(self) -> None:  # type: ignore[override]  # Textual allows sync action handlers
         serve = self.query_one(ServeScreen)
         if serve.has_running_server:
             self.notify(

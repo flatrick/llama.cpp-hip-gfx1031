@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import threading
+from typing import TYPE_CHECKING
 
 from rich.markup import escape
 from textual import on
@@ -17,6 +18,9 @@ from llamactl.core.monitor import read_server_vram_kib
 from llamactl.core.oomtest import OomTestResult, run_oom_check
 from llamactl.core.runtime import find_runtime
 from llamactl.ui.screens.serve import _VramGauge
+
+if TYPE_CHECKING:
+    from llamactl.ui.app import LlamaCtlApp
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +196,7 @@ class TestScreen(Widget):
     # ── Internal helpers ─────────────────────────────────────────────────────
 
     def _server(self) -> ServerInfo | None:
-        app = self.app
+        app: LlamaCtlApp = self.app  # type: ignore[assignment]
         return find_running(app._global_cfg, app._state_dir)
 
     def _refresh_precondition(self) -> None:
@@ -227,7 +231,8 @@ class TestScreen(Widget):
         kib = read_server_vram_kib(server, rt)
         try:
             gauge = self.query_one("#test-vram", _VramGauge)
-            gauge.budget_kib = int(self.app._global_cfg.vram_budget_gb * 1024 * 1024)
+            app: LlamaCtlApp = self.app  # type: ignore[assignment]
+            gauge.budget_kib = int(app._global_cfg.vram_budget_gb * 1024 * 1024)
             gauge.vram_kib = kib
         except NoMatches:
             pass
@@ -257,7 +262,8 @@ class TestScreen(Widget):
             self._vram_timer = self.set_interval(2.0, self._poll_test_vram)
         self._poll_test_vram()
         # Capture app state on the UI thread; never read self.app from the worker.
-        global_cfg = self.app._global_cfg
+        app: LlamaCtlApp = self.app  # type: ignore[assignment]
+        global_cfg = app._global_cfg
         self._peak_gb = None
         try:
             self.query_one("#test-table", DataTable).clear()

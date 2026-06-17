@@ -5,7 +5,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 from .config import StressConfig
 from .models import RequestMetrics, RuntimeInfo
@@ -196,5 +196,5 @@ class LlamaServerClient:
         body = result.get("body")
         if body is None:
             raise RuntimeError("request completed without a JSON body")
-        elapsed_s = float(result.get("elapsed_s", time.monotonic() - started_at))
+        elapsed_s = float(cast(float, result.get("elapsed_s", time.monotonic() - started_at)))
         return RequestMetrics.from_response(body, elapsed_s)

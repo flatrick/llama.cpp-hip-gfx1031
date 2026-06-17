@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from textual.app import ComposeResult
+from textual.coordinate import Coordinate
 from textual.widget import Widget
 from textual.widgets import Button, Checkbox, DataTable, Input, Label, RichLog, Select
 
@@ -119,7 +120,7 @@ class BuildsScreen(Widget):
             self.notify("Select an artifact row first.", severity="warning")
             return
         try:
-            row_key = table.coordinate_to_cell_key((table.cursor_row, 0)).row_key
+            row_key = table.coordinate_to_cell_key(Coordinate(table.cursor_row, 0)).row_key
             target, sha = str(row_key.value).split(":", 1)
         except Exception:
             self.notify("Could not identify the selected row.", severity="warning")

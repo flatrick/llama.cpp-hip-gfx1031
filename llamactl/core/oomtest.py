@@ -204,12 +204,8 @@ DEFAULT_PHASES = PhaseSet()
 
 def _peak_from(samples: list[PhaseSample]) -> float | None:
     """Return the maximum VRAM reading across a list of PhaseSamples."""
-    vals = [s.peak_vram_gb for s in samples if s.peak_vram_gb is not None]
-    vals += [
-        s.post_vram_gb
-        for s in samples
-        if getattr(s, "post_vram_gb", None) is not None
-    ]
+    vals: list[float] = [s.peak_vram_gb for s in samples if s.peak_vram_gb is not None]
+    vals += [s.post_vram_gb for s in samples if s.post_vram_gb is not None]
     return max(vals) if vals else None
 
 
