@@ -1,12 +1,13 @@
 # Vulkan backend build for llama.cpp.
-# Uses the official Vulkan SDK image for build-time dependencies (glslc, headers)
-# and Mesa's RADV driver at runtime via /dev/dri passthrough from the host.
+# Build-time dependencies come from Ubuntu apt (cmake/ninja/g++, libvulkan-dev,
+# glslc, and spirv-headers — required by ggml-vulkan's find_package(SPIRV-Headers)).
+# Mesa's RADV driver provides the runtime via /dev/dri passthrough from the host.
 FROM ubuntu:24.04 AS builder
 ARG DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
     cmake ninja-build g++ \
-    libvulkan-dev glslc \
+    libvulkan-dev glslc spirv-headers \
     libcurl4-openssl-dev git \
     && rm -rf /var/lib/apt/lists/*
 
