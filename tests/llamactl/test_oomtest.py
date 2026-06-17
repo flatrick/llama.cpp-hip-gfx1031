@@ -297,6 +297,42 @@ def test_run_phases_cancel_after_defrag_returns_peak():
     assert vram_avail is True
 
 
+class _StubMonitor:
+    def read(self):
+        return None
+
+
+def test_run_oom_check_returns_stopped_when_cancelled(monkeypatch):
+    """If cancel() is true after phases run, the verdict is STOPPED."""
+    import llamactl.core.oomtest as oom
+    from llamactl.core.lifecycle import ServerInfo
+
+    # Healthy server so we get past the early return.
+    class _Client:
+        def __init__(self, config): pass
+        def server_healthy(self): return True
+        def server_ctx_size(self): return 4096
+
+    monkeypatch.setattr(oom, "LlamaServerClient", _Client)
+    # Stub run_phases so we don't hit the network; report no phases, no peak.
+    monkeypatch.setattr(oom, "run_phases", lambda **kw: ([], None, False))
+    # Native path avoids container inspection.
+    monkeypatch.setattr(oom, "build_vram_monitor", lambda server, runtime: _StubMonitor())
+
+    server = ServerInfo(
+        model_id="m", backend="rocm", preset="", mode="native",
+        host="0.0.0.0", port=8080, started_at="", pid=1234, log_path=None,
+    )
+
+    class _Cfg:
+        vram_budget_gb = 11.0
+
+    result = oom.run_oom_check(
+        server, _NullReporter(), global_cfg=_Cfg(), cancel=lambda: True
+    )
+    assert result.verdict == "STOPPED"
+
+
 def test_run_oom_check_quick_flag_controls_rounds(monkeypatch):
     """quick=True keeps reduced rounds; quick=False uses full rounds.
 

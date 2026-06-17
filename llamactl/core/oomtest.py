@@ -230,6 +230,7 @@ def run_phases(
         runtime_inspector=runtime_inspector,
         runtime_info=runtime_info,
         reporter=reporter,
+        cancel=cancel,
     )
     phases: list[PhaseResult] = []
     peaks: list[float] = []
@@ -341,6 +342,10 @@ def run_oom_check(
         runtime_info=runtime_info,
         config=config,
     )
+    if cancel():
+        return OomTestResult(
+            "STOPPED", peak, None, None, "Stopped by user."
+        )
     return classify_verdict(phases, peak, global_cfg.vram_budget_gb, vram_available)
 
 
