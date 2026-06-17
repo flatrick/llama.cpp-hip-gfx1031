@@ -438,7 +438,8 @@ def test_image_build_context_has_llama_cpp_src_subdir(tmp_path, monkeypatch):
 
     seen = {}
 
-    def fake_build_image(target, context_dir, image_tag, repo_root, runtime, stream_runner):
+    def fake_build_image(target, context_dir, image_tag, repo_root, runtime, stream_runner,
+                         no_cache=False):
         seen["has_src_subdir"] = (Path(context_dir) / "llama.cpp-src" / "CMakeLists.txt").is_file()
         return iter(())
 
@@ -489,3 +490,59 @@ def test_native_build_context_is_source_root(tmp_path, monkeypatch):
         stream_runner=fake_stream, extractor=fake_extractor,
     ))
     assert seen.get("src_at_root") and seen.get("no_subdir")
+
+
+# --- Force rebuild (no-cache) for image builds -------------------------------
+
+def test_build_request_no_cache_defaults_false():
+    assert BuildRequest("latest-tag", "rocm-image").no_cache is False
+
+
+def test_build_image_no_cache_prepends_flag(tmp_path):
+    captured = {}
+
+    def stream(cmd, cwd=None):
+        captured["cmd"] = cmd
+        return iter(())
+
+    list(build_image("rocm-image", tmp_path / "ctx", "llama-cpp-gfx1031:b10",
+                     tmp_path / "repo", "docker", stream, no_cache=True))
+    cmd = captured["cmd"]
+    assert "--no-cache" in cmd
+    # placed right after `build`, before the `-f <dockerfile>` args
+    assert cmd.index("--no-cache") == cmd.index("build") + 1
+    assert cmd.index("--no-cache") < cmd.index("-f")
+
+
+def test_build_image_omits_no_cache_by_default(tmp_path):
+    captured = {}
+
+    def stream(cmd, cwd=None):
+        captured["cmd"] = cmd
+        return iter(())
+
+    list(build_image("rocm-image", tmp_path / "ctx", "llama-cpp-gfx1031:b10",
+                     tmp_path / "repo", "docker", stream))
+    assert "--no-cache" not in captured["cmd"]
+
+
+def test_run_build_threads_no_cache_to_build_image(tmp_path, monkeypatch):
+    import llamactl.core.builds as b
+    monkeypatch.setattr(b, "resolve_ref",
+                        lambda *a, **k: ResolvedRef("sha123456789", "b10", "refs/tags/b10", "x"))
+    monkeypatch.setattr(b, "export_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(b, "find_runtime", lambda: "docker")
+    captured = {}
+
+    def fake_image(target, context_dir, image_tag, repo_root, runtime,
+                   stream_runner=None, no_cache=False):
+        captured["no_cache"] = no_cache
+        return iter(())
+
+    monkeypatch.setattr(b, "build_image", fake_image)
+    list(run_build(
+        BuildRequest("latest-tag", "rocm-image", no_cache=True),
+        repo_root=tmp_path, state_dir=tmp_path, submodule_dir=tmp_path / "sub",
+        registry_path=tmp_path / "registry.toml",
+    ))
+    assert captured["no_cache"] is True

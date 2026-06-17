@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from textual.app import ComposeResult
 from textual.widget import Widget
-from textual.widgets import Button, DataTable, Input, Label, RichLog, Select
+from textual.widgets import Button, Checkbox, DataTable, Input, Label, RichLog, Select
 
 from llamactl.core.builds import BuildRequest, delete_artifact, is_in_use, run_build
 
@@ -23,7 +23,7 @@ _TARGETS = [
 class BuildsScreen(Widget):
     DEFAULT_CSS = """
     BuildsScreen { height: 1fr; layout: vertical; }
-    BuildsScreen Input, BuildsScreen Select { margin-bottom: 1; }
+    BuildsScreen Input, BuildsScreen Select, BuildsScreen Checkbox { margin-bottom: 1; }
     BuildsScreen #build-log { height: 1fr; border: solid $panel; margin: 1 0; }
     BuildsScreen #artifact-table { height: 10; border: solid $panel; }
     BuildsScreen .button-row { height: auto; layout: horizontal; }
@@ -34,6 +34,7 @@ class BuildsScreen(Widget):
         yield Label("Source ref (submodule, latest-tag, tag:bNNNN, branch:NAME, commit:SHA):")
         yield Input(value="latest-tag", id="ref-input")
         yield Select(options=_TARGETS, value="rocm-image", id="target-select")
+        yield Checkbox("Force rebuild (no cache)", id="no-cache-toggle")
         with Widget(classes="button-row"):
             yield Button("Build", id="btn-build", variant="success")
             yield Button("Delete selected", id="btn-delete", variant="error")
@@ -68,18 +69,19 @@ class BuildsScreen(Widget):
             self.query_one("#btn-delete", Button).disabled = True
             ref = self.query_one("#ref-input", Input).value.strip()
             target = str(self.query_one("#target-select", Select).value)
+            no_cache = self.query_one("#no-cache-toggle", Checkbox).value
             log = self.query_one("#build-log", RichLog)
             self.run_worker(
-                lambda: self._build_thread(ref, target, log),
+                lambda: self._build_thread(ref, target, no_cache, log),
                 thread=True, exclusive=True, group="build",
             )
         elif event.button.id == "btn-delete":
             self._delete_selected()
 
-    def _build_thread(self, ref: str, target: str, log: RichLog) -> None:
+    def _build_thread(self, ref: str, target: str, no_cache: bool, log: RichLog) -> None:
         app: LlamaCtlApp = self.app  # type: ignore[assignment]
         try:
-            req = BuildRequest(ref=ref, target=target)
+            req = BuildRequest(ref=ref, target=target, no_cache=no_cache)
             for line in run_build(
                 req, app._repo_root, app._state_dir,
                 app._repo_root / "llama.cpp-src", app._state_dir / "registry.toml",
