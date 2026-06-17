@@ -155,6 +155,48 @@ async def test_unmount_sets_cancel_signal(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_quick_checkbox_default_checked_and_passed(tmp_path, monkeypatch):
+    """The Quick-mode checkbox defaults to checked and its value is passed as quick."""
+    from llamactl.ui.app import LlamaCtlApp
+    import llamactl.ui.screens.test as test_mod
+    from llamactl.core.lifecycle import ServerInfo
+    from llamactl.ui.screens.test import TestScreen
+    from textual.widgets import Checkbox, TabbedContent
+
+    server = ServerInfo(
+        model_id="m", backend="rocm", preset="", mode="native",
+        host="0.0.0.0", port=8080, started_at="", pid=1234,
+    )
+    monkeypatch.setattr(test_mod, "find_running", lambda *_a, **_kw: server)
+
+    captured = {}
+    def fake_run_oom_check(srv, reporter, *, global_cfg, cancel, quick=True):
+        captured["quick"] = quick
+        from llamactl.core.oomtest import OomTestResult
+        return OomTestResult("OK", 1.0, 100, None, "done")
+    monkeypatch.setattr(test_mod, "run_oom_check", fake_run_oom_check)
+
+    app = LlamaCtlApp(repo_root=_repo_with_model(tmp_path))
+    async with app.run_test(headless=True) as pilot:
+        app.query_one(TabbedContent).active = "test"
+        await pilot.pause()
+        screen = app.query_one(TestScreen)
+        cb = screen.query_one("#quick-mode", Checkbox)
+        assert cb.value is True  # default checked = quick
+
+        # Uncheck → full run.
+        cb.value = False
+        await pilot.pause()
+        screen._start_run(screen.query_one("#btn-run-test"))
+        # Worker runs on a thread; give it a moment to call run_oom_check.
+        for _ in range(50):
+            if "quick" in captured:
+                break
+            await pilot.pause(0.02)
+        assert captured["quick"] is False
+
+
+@pytest.mark.asyncio
 async def test_verdict_detail_markup_is_escaped(tmp_path):
     """Log-excerpt detail containing Textual markup tags must render literally,
     not be parsed as markup (which would silently strip the tags from the

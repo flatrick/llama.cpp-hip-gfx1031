@@ -9,7 +9,7 @@ from textual.app import ComposeResult
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.widget import Widget
-from textual.widgets import Button, DataTable, Label, Static
+from textual.widgets import Button, Checkbox, DataTable, Label, Static
 
 from llamactl.core.config import GlobalConfig
 from llamactl.core.lifecycle import ServerInfo, find_running
@@ -122,6 +122,7 @@ class TestScreen(Widget):
     def compose(self) -> ComposeResult:
         yield Label("OOM boundary check", id="test-title")
         yield Static("", id="test-precondition")
+        yield Checkbox("Quick mode (faster, fewer rounds)", value=True, id="quick-mode")
         yield Button("Run check", id="btn-run-test", disabled=True)
         table = DataTable(id="test-table")
         table.add_columns(
@@ -130,9 +131,9 @@ class TestScreen(Widget):
         yield table
         yield Static("", id="verdict")
         yield Static(
-            "[dim]Full multi-phase stress suite: run `python stress_test.py` "
-            "(set QUICK=1 for a faster pass). This tab runs a quick subset and "
-            "can take a few minutes at large context.[/dim]",
+            "[dim]Quick mode runs a reduced subset; uncheck it for a fuller pass "
+            "(more sustained/cold/defrag rounds — takes longer). For the complete "
+            "multi-phase suite run `python stress_test.py`.[/dim]",
             id="test-footer",
         )
 
@@ -171,6 +172,10 @@ class TestScreen(Widget):
                 f"/ {server.mode} / port {server.port}"
             )
             btn.disabled = self._test_active  # keep disabled while a run is active
+            try:
+                self.query_one("#quick-mode", Checkbox).disabled = self._test_active
+            except NoMatches:
+                pass
 
     # ── Button handler ───────────────────────────────────────────────────────
 
@@ -201,8 +206,14 @@ class TestScreen(Widget):
         except NoMatches:
             pass
         button.label = "Stop"
+        quick = True
+        try:
+            quick = self.query_one("#quick-mode", Checkbox).value
+        except NoMatches:
+            pass
+        self.query_one("#quick-mode", Checkbox).disabled = True
         self.run_worker(
-            lambda: self._run_worker(server, global_cfg),
+            lambda: self._run_worker(server, global_cfg, quick),
             thread=True,
             exclusive=True,
             group="oom-test",
@@ -210,7 +221,7 @@ class TestScreen(Widget):
 
     # ── Worker (runs on a thread — must only post messages) ──────────────────
 
-    def _run_worker(self, server: ServerInfo, global_cfg: GlobalConfig) -> None:
+    def _run_worker(self, server: ServerInfo, global_cfg: GlobalConfig, quick: bool) -> None:
         reporter = TextualReporter(self)
         try:
             result = run_oom_check(
@@ -218,6 +229,7 @@ class TestScreen(Widget):
                 reporter,
                 global_cfg=global_cfg,
                 cancel=self._cancel_evt.is_set,
+                quick=quick,
             )
         except Exception as exc:
             result = OomTestResult(
@@ -256,4 +268,8 @@ class TestScreen(Widget):
         except NoMatches:
             pass
         self._test_active = False
+        try:
+            self.query_one("#quick-mode", Checkbox).disabled = False
+        except NoMatches:
+            pass
         self._refresh_precondition()
