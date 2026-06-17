@@ -83,6 +83,28 @@ def read_gguf_metadata(path: str) -> dict[str, Any]:
     return meta
 
 
+def _resolve_kv_layers(meta: dict[str, Any], arch: str, block_count: int) -> int:
+    """Number of layers that hold a context-scaling KV cache.
+
+    Hybrid models (e.g. Qwen3.5 Gated Delta Net) interleave full-attention layers
+    with SSM/linear-attention layers that have NO ctx-scaling KV cache. Counting
+    every block as a KV layer massively overestimates VRAM.
+
+    Order: explicit attention_layer_count → derive from full_attention_interval
+    (1 full-attention layer every N blocks) → fall back to block_count.
+    """
+    explicit = meta.get(
+        f"{arch}.attention_layer_count",
+        meta.get(f"{arch}.attention.layer_count"),
+    )
+    if explicit:
+        return explicit
+    interval = meta.get(f"{arch}.full_attention_interval")
+    if interval:
+        return max(1, block_count // interval)
+    return block_count
+
+
 def model_params_from_gguf(path: str) -> dict[str, Any]:
     """
     Extract the parameters we need for VRAM calculation from a GGUF file.
@@ -97,11 +119,8 @@ def model_params_from_gguf(path: str) -> dict[str, Any]:
     block_count = meta.get(f"{arch}.block_count", 0)
 
     # Hybrid models (e.g. Qwen3.5 Gated Delta Net) have fewer attention layers
-    # than total blocks. Look for an explicit attention_layer_count first.
-    kv_layers = meta.get(
-        f"{arch}.attention_layer_count",
-        meta.get(f"{arch}.attention.layer_count", block_count)
-    )
+    # than total blocks — only those hold a ctx-scaling KV cache.
+    kv_layers = _resolve_kv_layers(meta, arch, block_count)
 
     kv_heads = meta.get(
         f"{arch}.attention.head_count_kv",
@@ -196,29 +215,44 @@ def resolve_gguf_path(hf_spec: str, global_cfg: GlobalConfig) -> Path | None:
         _log.warning("estimate: rejecting unsafe hf spec %r", hf_spec)
         return None
 
-    # 1. llama.cpp -hf cache: flattened filenames containing repo + quant.
-    #    The repo-less `*{quant}*.gguf` fallback is a last resort for caches
-    #    whose filenames omit the repo; in a shared cache it can match a
-    #    different model that uses the same quant.
-    llama_cache = global_cfg.llama_cache
-    for pattern in (f"*{repo}*{quant}*.gguf", f"*{quant}*.gguf"):
-        matches = sorted(glob.glob(str(llama_cache / pattern)))
-        if matches:
-            _log.debug("estimate: resolved %s via pattern %r -> %s",
-                       hf_spec, pattern, matches[-1])
-            return Path(matches[-1])
+    # Resolution prefers REPO-SPECIFIC matches; the repo-less fallback is used
+    # only when it is unambiguous. In a shared cache, several models share a
+    # quant (e.g. UD-Q5_K_XL), so a greedy repo-less glob could resolve to a
+    # completely different (much larger) model and wildly mis-estimate VRAM.
 
-    # 2. HF hub snapshot layout (huggingface-cli downloads). With multiple
-    #    snapshots we take the lexicographically last; single-snapshot repos
-    #    (the common case) are unambiguous.
+    # 1. llama.cpp -hf cache: flattened filenames containing repo + quant.
+    llama_cache = global_cfg.llama_cache
+    matches = sorted(glob.glob(str(llama_cache / f"*{repo}*{quant}*.gguf")))
+    if matches:
+        _log.debug("estimate: resolved %s in llama_cache (repo+quant) -> %s",
+                   hf_spec, matches[-1])
+        return Path(matches[-1])
+
+    # 2. HF hub snapshot layout (huggingface-cli downloads), repo-specific. With
+    #    multiple snapshots we take the lexicographically last; single-snapshot
+    #    repos (the common case) are unambiguous.
     hf_cache = global_cfg.hf_cache
     hub = hf_cache / "hub" if (hf_cache / "hub").is_dir() else hf_cache
     pattern = str(hub / f"models--{org}--{repo}" / "snapshots" / "*" / f"*{quant}*.gguf")
     matches = sorted(glob.glob(pattern))
     if matches:
-        _log.debug("estimate: resolved %s via pattern %r -> %s",
-                   hf_spec, pattern, matches[-1])
+        _log.debug("estimate: resolved %s via HF hub layout -> %s",
+                   hf_spec, matches[-1])
         return Path(matches[-1])
+
+    # 3. Repo-less last resort for caches whose filenames omit the repo. Only
+    #    accept it when EXACTLY ONE file carries this quant — otherwise the match
+    #    is ambiguous across models and we must not guess.
+    matches = sorted(glob.glob(str(llama_cache / f"*{quant}*.gguf")))
+    if len(matches) == 1:
+        _log.debug("estimate: resolved %s via unique repo-less quant match -> %s",
+                   hf_spec, matches[0])
+        return Path(matches[0])
+    if len(matches) > 1:
+        _log.warning(
+            "estimate: %r matches %d models sharing quant %r in llama_cache; "
+            "refusing to guess (estimate unavailable)", hf_spec, len(matches), quant
+        )
 
     return None
 

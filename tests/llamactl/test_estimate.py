@@ -5,7 +5,13 @@ from pathlib import Path
 import pytest
 
 from llamactl.core.config import GlobalConfig, ModelConfig
-from llamactl.core.estimate import Estimate, compute_estimate, estimate_vram, resolve_gguf_path
+from llamactl.core.estimate import (
+    Estimate,
+    _resolve_kv_layers,
+    compute_estimate,
+    estimate_vram,
+    resolve_gguf_path,
+)
 
 
 def test_compute_estimate_breakdown():
@@ -206,3 +212,48 @@ def test_estimate_vram_none_when_head_dim_missing(monkeypatch):
     )
     model = _model("org/repo:Q5_K_M")
     assert estimate_vram(model, {"ctx_size": 4096}, _DummyCfg()) is None
+
+
+# ── resolve_gguf_path: don't guess across models sharing a quant ──────────────
+
+def test_resolve_ambiguous_quant_only_returns_none(tmp_path):
+    # Two different models share the quant and neither matches the repo. The
+    # repo-less fallback must NOT guess one — return None (estimate unavailable)
+    # rather than estimate against the wrong (possibly much larger) model.
+    cfg = _global_cfg(tmp_path)
+    cfg.llama_cache.mkdir(parents=True)
+    (cfg.llama_cache / "unsloth_Qwen3.5-4B-GGUF_Qwen3.5-4B-UD-Q5_K_XL.gguf").write_bytes(b"GGUF")
+    (cfg.llama_cache / "unsloth_Qwen3.6-35B-A3B-GGUF_Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf").write_bytes(b"GGUF")
+    assert resolve_gguf_path("unsloth/Qwen3.5-0.8B-GGUF:UD-Q5_K_XL", cfg) is None
+
+
+def test_resolve_prefers_hf_hub_repo_match_over_quant_only(tmp_path):
+    # The real model is in the HF-hub cache (repo-specific); a DIFFERENT model
+    # with the same quant sits in llama_cache. The repo-specific HF-hub match
+    # must win over the repo-less fallback (the bug: it picked the wrong file).
+    cfg = _global_cfg(tmp_path)
+    cfg.llama_cache.mkdir(parents=True)
+    (cfg.llama_cache / "unsloth_Qwen3.6-35B-A3B-GGUF_Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf").write_bytes(b"GGUF")
+    snap = cfg.hf_cache / "models--unsloth--Qwen3.5-0.8B-GGUF" / "snapshots" / "abc"
+    snap.mkdir(parents=True)
+    correct = snap / "Qwen3.5-0.8B-UD-Q5_K_XL.gguf"
+    correct.write_bytes(b"GGUF")
+    got = resolve_gguf_path("unsloth/Qwen3.5-0.8B-GGUF:UD-Q5_K_XL", cfg)
+    assert got == correct
+
+
+# ── _resolve_kv_layers: hybrid (SSM/attention) models ─────────────────────────
+
+def test_kv_layers_uses_full_attention_interval():
+    # Hybrid model: only every 4th of 24 layers is full-attention → 6 KV layers.
+    meta = {"qwen35.full_attention_interval": 4}
+    assert _resolve_kv_layers(meta, "qwen35", 24) == 6
+
+
+def test_kv_layers_prefers_explicit_attention_layer_count():
+    meta = {"qwen35.attention_layer_count": 8, "qwen35.full_attention_interval": 4}
+    assert _resolve_kv_layers(meta, "qwen35", 24) == 8
+
+
+def test_kv_layers_falls_back_to_block_count():
+    assert _resolve_kv_layers({}, "llm", 32) == 32
