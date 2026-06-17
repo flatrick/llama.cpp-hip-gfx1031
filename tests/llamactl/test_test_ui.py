@@ -63,6 +63,38 @@ async def test_test_tab_disabled_without_server(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_test_tab_notices_server_started_after_mount(tmp_path, monkeypatch):
+    """Switching to the Test tab re-checks for a running server. A container
+    started (from the Serve tab) after the Test pane mounted must be noticed."""
+    from llamactl.ui.app import LlamaCtlApp
+    import llamactl.ui.screens.test as test_mod
+    from llamactl.core.lifecycle import ServerInfo
+    from llamactl.ui.screens.test import TestScreen
+    from textual.widgets import Button, TabbedContent
+
+    state: dict[str, ServerInfo | None] = {"server": None}
+    monkeypatch.setattr(test_mod, "find_running", lambda *_a, **_kw: state["server"])
+
+    app = LlamaCtlApp(repo_root=_repo_with_model(tmp_path))
+    async with app.run_test(headless=True) as pilot:
+        screen = app.query_one(TestScreen)
+        btn = screen.query_one("#btn-run-test", Button)
+        # No server at mount → run disabled.
+        assert btn.disabled is True
+
+        # A container comes up after mount.
+        state["server"] = ServerInfo(
+            model_id="m", backend="rocm", preset="", mode="container",
+            host="0.0.0.0", port=8080, started_at="", container_name="llamactl-m",
+        )
+        # Switching to the Test tab must re-detect it and enable the button.
+        app.query_one(TabbedContent).active = "test"
+        await pilot.pause()
+
+        assert btn.disabled is False
+
+
+@pytest.mark.asyncio
 async def test_verdict_banner_renders(tmp_path):
     from llamactl.ui.app import LlamaCtlApp
     from llamactl.ui.screens.test import TestScreen, _Verdict
@@ -117,7 +149,7 @@ async def test_unmount_sets_cancel_signal(tmp_path):
         await pilot.pause()
         screen = app.query_one(TestScreen)
         # Simulate an in-progress run.
-        screen._running = True
+        screen._test_active = True
         screen.on_unmount()
         assert screen._cancel_evt.is_set()
 

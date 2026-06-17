@@ -113,7 +113,10 @@ class TestScreen(Widget):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self._running = False          # whether a test run is in progress
+        # NB: do NOT name this `_running` — that collides with Textual's
+        # MessagePump._running (set True once the widget's loop starts), which
+        # would silently force this flag True after mount.
+        self._test_active = False      # whether a test run is in progress
         self._cancel_evt = threading.Event()  # cross-thread cancel signal
 
     def compose(self) -> ComposeResult:
@@ -167,7 +170,7 @@ class TestScreen(Widget):
                 f"Target: {server.model_id} / {server.backend} "
                 f"/ {server.mode} / port {server.port}"
             )
-            btn.disabled = self._running  # keep disabled while a run is active
+            btn.disabled = self._test_active  # keep disabled while a run is active
 
     # ── Button handler ───────────────────────────────────────────────────────
 
@@ -175,7 +178,7 @@ class TestScreen(Widget):
         """Handle Run / Stop toggle."""
         if event.button.id != "btn-run-test":
             return
-        if self._running:
+        if self._test_active:
             # User pressed "Stop"
             self._cancel_evt.set()
             event.button.label = "Stopping…"
@@ -189,7 +192,7 @@ class TestScreen(Widget):
             self._refresh_precondition()
             return
         self._cancel_evt.clear()
-        self._running = True
+        self._test_active = True
         # Capture app state on the UI thread; never read self.app from the worker.
         global_cfg = self.app._global_cfg
         try:
@@ -252,5 +255,5 @@ class TestScreen(Widget):
             btn.disabled = False
         except NoMatches:
             pass
-        self._running = False
+        self._test_active = False
         self._refresh_precondition()

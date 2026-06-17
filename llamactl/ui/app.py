@@ -5,6 +5,7 @@ from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.css.query import NoMatches
 from textual.widgets import Footer, Header, TabbedContent, TabPane
 
 from llamactl.core.config import GlobalConfig, ModelConfig, load_all, load_global
@@ -79,6 +80,18 @@ class LlamaCtlApp(App):
             with TabPane("Test", id="test"):
                 yield TestScreen()
         yield Footer()
+
+    def on_tabbed_content_tab_activated(
+        self, event: TabbedContent.TabActivated
+    ) -> None:
+        # The Test pane checks for a running server only at mount, so a server
+        # started (or stopped) afterwards goes unnoticed. Re-check whenever the
+        # user switches to it.
+        try:
+            if self.query_one(TabbedContent).active == "test":
+                self.query_one(TestScreen)._refresh_precondition()
+        except NoMatches:
+            pass
 
     def action_quit(self) -> None:
         serve = self.query_one(ServeScreen)
