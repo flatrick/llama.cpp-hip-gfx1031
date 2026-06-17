@@ -112,7 +112,18 @@ class TextualReporter:
         self._screen.post_message(_PeakStat(sample.peak_vram_gb, warn_at))
 
     def finish_phase(self, phase) -> None:
-        return None
+        # The Boundary phase (and any phase using details/log_excerpt instead of
+        # per-sample rows) reports its pass/fail reasons here. Surface them as
+        # table rows so the TUI shows WHY a phase failed — otherwise the verdict
+        # only carries the generic summary and the reason is lost.
+        for label, value in phase.details:
+            self._screen.post_message(_PhaseRow((phase.key, label, "", "", "", "", value)))
+        if phase.log_excerpt:
+            self._screen.post_message(_PhaseRow(
+                ("", f"── last {len(phase.log_excerpt)} log lines ──", "", "", "", "", "")
+            ))
+            for line in phase.log_excerpt:
+                self._screen.post_message(_PhaseRow(("", "", "", "", "", "", line.strip())))
 
     def finish_run(self, result) -> None:
         # Verdict banner is set from run_oom_check's return value in _run_worker.
