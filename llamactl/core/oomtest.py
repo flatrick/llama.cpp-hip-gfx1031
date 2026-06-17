@@ -227,11 +227,14 @@ def run_phases(
             peaks.append(p)
             any_reading = True
 
+    def _result() -> tuple[list[PhaseResult], float | None, bool]:
+        return phases, (max(peaks) if peaks else None), any_reading
+
     # Phase 1: Ramp
     ramp = phase_set.ramp(**kw).run(config_steps)
     _track(ramp)
     if not ramp.success or not ramp.last_ok_tokens or cancel():
-        return phases, (max(peaks) if peaks else None), any_reading
+        return _result()
     last_ok = ramp.last_ok_tokens
 
     # Phases 2–4: Sustained, ColdStart, Defrag
@@ -243,10 +246,7 @@ def run_phases(
         result = getattr(phase_set, attr)(**kw).run(arg)
         _track(result)
         if not result.success or cancel():
-            return phases, (max(peaks) if peaks else None), any_reading
-
-    if cancel():
-        return phases, (max(peaks) if peaks else None), any_reading
+            return _result()
 
     # Phase 5: Boundary
     ctx = (
@@ -256,7 +256,7 @@ def run_phases(
     )
     boundary = phase_set.boundary(**kw).run(ctx)
     _track(boundary)
-    return phases, (max(peaks) if peaks else None), any_reading
+    return _result()
 
 
 # ---------------------------------------------------------------------------
