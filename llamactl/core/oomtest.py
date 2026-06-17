@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from stress_harness.config import StressConfig
 from stress_harness.models import PhaseResult, PhaseSample, RuntimeInfo, StressRunResult
@@ -29,6 +29,21 @@ from llamactl.core.config import GlobalConfig
 from llamactl.core.lifecycle import ServerInfo
 from llamactl.core.monitor import read_vram_kib
 from llamactl.core.runtime import find_runtime, get_container_pid
+
+
+class Reporter(Protocol):
+    """Duck-typed reporter surface the phases + runner drive.
+
+    `error` is dual-purpose (informational and fatal); `finish_run` is called
+    only when all phases pass.
+    """
+
+    def start_run(self, result: Any) -> None: ...
+    def start_phase(self, phase: Any) -> None: ...
+    def record_sample(self, phase_key: str, sample: Any, warn_at: float | None) -> None: ...
+    def finish_phase(self, phase: Any) -> None: ...
+    def finish_run(self, result: Any) -> None: ...
+    def error(self, message: str) -> None: ...
 
 
 def build_vram_monitor(
@@ -192,13 +207,13 @@ def run_phases(
     config_steps: list[int],
     phase_set: PhaseSet,
     cancel: Callable[[], bool],
-    reporter,
-    client,
-    prompt_builder,
+    reporter: Reporter,
+    client: LlamaServerClient,
+    prompt_builder: PromptBuilder,
     vram_monitor: VramMonitor,
-    runtime_inspector,
-    runtime_info,
-    config=None,
+    runtime_inspector: Any,
+    runtime_info: RuntimeInfo,
+    config: StressConfig | None = None,
 ) -> tuple[list[PhaseResult], float | None, bool]:
     """Run ramp → sustained → cold-start → defrag → boundary.
 
@@ -266,7 +281,7 @@ def run_phases(
 
 def run_oom_check(
     server: ServerInfo,
-    reporter,
+    reporter: Reporter,
     *,
     global_cfg: GlobalConfig,
     cancel: Callable[[], bool] = lambda: False,

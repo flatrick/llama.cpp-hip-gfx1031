@@ -11,6 +11,7 @@ from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Button, DataTable, Label, Static
 
+from llamactl.core.config import GlobalConfig
 from llamactl.core.lifecycle import ServerInfo, find_running
 from llamactl.core.oomtest import OomTestResult, run_oom_check
 
@@ -206,7 +207,7 @@ class TestScreen(Widget):
 
     # ── Worker (runs on a thread — must only post messages) ──────────────────
 
-    def _run_worker(self, server, global_cfg) -> None:
+    def _run_worker(self, server: ServerInfo, global_cfg: GlobalConfig) -> None:
         reporter = TextualReporter(self)
         try:
             result = run_oom_check(
