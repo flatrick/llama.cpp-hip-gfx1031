@@ -261,45 +261,28 @@ def test_run_phases_stops_on_cancel():
 
 
 def test_run_phases_cancel_after_defrag_returns_peak():
-    """Cancelling so that defrag is the last phase run must still return the
-    peak accumulated so far (regression guard for the run_phases refactor)."""
-    from llamactl.core.oomtest import run_phases, PhaseSet
-    from stress_harness.models import PhaseResult, PhaseSample
-
-    def make_phase(key, peak, *, success=True, last_ok=10):
-        class _P:
-            def __init__(self, **kw):
-                pass
-            def run(self, *a):
-                return PhaseResult(
-                    key=key, title=key, samples=[
-                        PhaseSample(label="s", peak_vram_gb=peak,
-                                    post_vram_gb=None, ok=success, status="ok")
-                    ],
-                    success=success, summary="", log_excerpt=[], details=[],
-                    last_ok_tokens=last_ok,
-                )
-        return _P
-
+    """Cancelling after defrag must still return the accumulated peak and must
+    not run boundary (regression guard for the run_phases refactor)."""
+    specs = {
+        "ramp": _FakePhase("ramp", last_ok=100, peak=5.0),
+        "sustained": _FakePhase("sustained", peak=6.0),
+        "cold_start": _FakePhase("cold-start", peak=7.0),
+        "defrag": _FakePhase("defrag", peak=9.0),
+        "boundary": _FakePhase("boundary", peak=99.0),  # must NOT run
+    }
     calls = {"n": 0}
+
     def cancel():
         calls["n"] += 1
-        return calls["n"] > 3  # True after ramp+sustained+cold+defrag have run
-
-    pset = PhaseSet(
-        ramp=make_phase("ramp", 5.0), sustained=make_phase("sustained", 6.0),
-        cold_start=make_phase("cold", 7.0), defrag=make_phase("defrag", 9.0),
-        boundary=make_phase("boundary", 99.0),  # must NOT run
-    )
-
-    class _Rep:
-        def finish_phase(self, r): pass
+        return calls["n"] > 3  # cancel() polled once per phase; True after defrag (4th)
 
     phases, peak, vram_avail = run_phases(
-        config_steps=[1], phase_set=pset, cancel=cancel, reporter=_Rep(),
-        client=None, prompt_builder=None, vram_monitor=None,
-        runtime_inspector=None, runtime_info=None, config=None,
+        config_steps=[1],
+        phase_set=_phase_set(specs),
+        cancel=cancel,
+        reporter=_RecordingReporter(),
+        **_noop_collaborators(),
     )
-    assert [p.key for p in phases] == ["ramp", "sustained", "cold", "defrag"]
+    assert [p.key for p in phases] == ["ramp", "sustained", "cold-start", "defrag"]
     assert peak == 9.0
     assert vram_avail is True
