@@ -288,11 +288,15 @@ def run_oom_check(
     global_cfg: GlobalConfig,
     cancel: Callable[[], bool] = lambda: False,
     phase_set: PhaseSet = DEFAULT_PHASES,
+    quick: bool = True,
 ) -> OomTestResult:
-    """Run the QUICK OOM boundary check against the running server."""
+    """Run the OOM boundary check against the running server.
+
+    quick=True (default) runs the reduced suite; quick=False runs full rounds.
+    """
     api_url = f"http://127.0.0.1:{server.port}/v1/chat/completions"
     config = StressConfig.from_env({
-        "QUICK": "1",
+        "QUICK": "1" if quick else "0",
         "API_URL": api_url,
         "VRAM_WARN_GB": str(global_cfg.vram_budget_gb),
         # NB: do NOT set CTX_SIZE — let the harness auto-detect from /slots.

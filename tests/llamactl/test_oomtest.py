@@ -175,6 +175,15 @@ def _noop_collaborators():
     )
 
 
+class _NullReporter:
+    def start_run(self, result): pass
+    def start_phase(self, phase): pass
+    def record_sample(self, phase_key, sample, warn_at): pass
+    def finish_phase(self, phase): pass
+    def finish_run(self, result): pass
+    def error(self, message): pass
+
+
 class _RecordingReporter:
     def start_run(self, r): ...
     def start_phase(self, p): ...
@@ -286,3 +295,40 @@ def test_run_phases_cancel_after_defrag_returns_peak():
     assert [p.key for p in phases] == ["ramp", "sustained", "cold-start", "defrag"]
     assert peak == 9.0
     assert vram_avail is True
+
+
+def test_run_oom_check_quick_flag_controls_rounds(monkeypatch):
+    """quick=True keeps reduced rounds; quick=False uses full rounds.
+
+    Capture the StressConfig the run builds by stubbing the network/inspection so
+    run_oom_check stops right after config creation.
+    """
+    import llamactl.core.oomtest as oom
+    from llamactl.core.lifecycle import ServerInfo
+
+    captured = {}
+
+    class _StubClient:
+        def __init__(self, config):
+            captured["config"] = config
+        def server_healthy(self):
+            return False  # short-circuits run_oom_check right after config build
+
+    monkeypatch.setattr(oom, "LlamaServerClient", _StubClient)
+
+    server = ServerInfo(
+        model_id="m", backend="rocm", preset="", mode="native",
+        host="0.0.0.0", port=8080, started_at="", pid=1234,
+    )
+
+    class _Cfg:
+        vram_budget_gb = 11.0
+
+    oom.run_oom_check(server, _NullReporter(), global_cfg=_Cfg(), quick=True)
+    assert captured["config"].sustained_rounds == 3
+    assert captured["config"].cold_rounds == 1
+
+    oom.run_oom_check(server, _NullReporter(), global_cfg=_Cfg(), quick=False)
+    assert captured["config"].sustained_rounds == 20
+    assert captured["config"].cold_rounds == 8
+    assert captured["config"].defrag_cycles == 10
