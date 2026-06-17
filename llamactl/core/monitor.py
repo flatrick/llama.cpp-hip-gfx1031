@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 from typing import Iterable
 
-from llamactl.core.lifecycle import ServerState
+from llamactl.core.lifecycle import ServerInfo, ServerState
 from llamactl.core.runtime import Runner, _default_runner
 
 _UNIT_MULTIPLIERS: dict[str, float] = {
@@ -172,6 +172,21 @@ def read_container_vram_kib(
         parsed.append(_parse_fdinfo_text(content))
 
     return _sum_unique_clients(parsed)
+
+
+def read_server_vram_kib(server: ServerInfo, runtime: str | None) -> int | None:
+    """VRAM (KiB) for a managed server, or None if it cannot be read.
+
+    Native: read the server's own /proc/<pid>/fdinfo.
+    Container: read fdinfo inside the container via `exec` (needs runtime).
+    """
+    if server.mode == "native":
+        if server.pid is None:
+            return None
+        return read_vram_kib(str(server.pid))
+    if server.container_name and runtime is not None:
+        return read_container_vram_kib(server.container_name, runtime)
+    return None
 
 
 def check_health(port: int, timeout: float = 2.0) -> ServerState:

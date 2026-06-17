@@ -469,18 +469,9 @@ class ServeScreen(Widget):
             return
         try:
             import asyncio
-            from llamactl.core.monitor import (
-                check_health,
-                read_container_vram_kib,
-                read_vram_kib,
-            )
+            from llamactl.core.monitor import check_health, read_server_vram_kib
             app: LlamaCtlApp = self.app  # type: ignore[assignment]
             port = self._server_info.port
-            pid_str = (
-                str(self._server_info.pid)
-                if self._server_info.pid is not None
-                else None
-            )
             mode = self._server_info.mode
 
             # Liveness probe — detect dead process/container before health check
@@ -502,25 +493,11 @@ class ServeScreen(Widget):
             header = self.query_one(_StatusHeader)
             header.state = new_state
 
-            # Resolve VRAM usage. None means "could not read" (surface as
-            # unavailable); an int (incl. 0) is a real reading.
-            #
-            # Native: read the server's own /proc/<pid>/fdinfo directly.
-            # Container: read fdinfo *inside* the container via `exec` — the
-            # server runs as root in the container, so reading host-side
-            # /proc/<pid>/fdinfo as a normal user fails with permission denied
-            # and would show a misleading 0.
-            vram_kib: int | None = None
-            if mode == "native" and pid_str is not None:
-                vram_kib = await asyncio.to_thread(read_vram_kib, pid_str)
-            elif mode == "container" and self._server_info.container_name:
-                from llamactl.core.runtime import find_runtime
-                rt = find_runtime()
-                if rt is not None:
-                    vram_kib = await asyncio.to_thread(
-                        read_container_vram_kib, self._server_info.container_name, rt
-                    )
-
+            from llamactl.core.runtime import find_runtime
+            rt = find_runtime() if mode == "container" else None
+            vram_kib = await asyncio.to_thread(
+                read_server_vram_kib, self._server_info, rt
+            )
             gauge = self.query_one(_VramGauge)
             gauge.budget_kib = int(app._global_cfg.vram_budget_gb * 1024 * 1024)
             gauge.vram_kib = vram_kib

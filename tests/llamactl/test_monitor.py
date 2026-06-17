@@ -198,3 +198,44 @@ def test_check_health_returns_unhealthy_on_other_http_error():
     with patch("urllib.request.urlopen", side_effect=err):
         state = check_health(8080)
     assert state == ServerState.UNHEALTHY
+
+
+# ── read_server_vram_kib ──────────────────────────────────────────────────────
+
+def test_read_server_vram_kib_dispatches_native(monkeypatch):
+    from llamactl.core.lifecycle import ServerInfo
+    import llamactl.core.monitor as mon
+
+    monkeypatch.setattr(mon, "read_vram_kib", lambda pid, **kw: 12345 if pid == "1234" else 0)
+    server = ServerInfo(
+        model_id="m", backend="rocm", preset="", mode="native",
+        host="0.0.0.0", port=8080, started_at="", pid=1234,
+    )
+    assert mon.read_server_vram_kib(server, None) == 12345
+
+
+def test_read_server_vram_kib_dispatches_container(monkeypatch):
+    from llamactl.core.lifecycle import ServerInfo
+    import llamactl.core.monitor as mon
+
+    monkeypatch.setattr(
+        mon, "read_container_vram_kib",
+        lambda name, runtime, **kw: 999 if name == "llamactl-m" else None,
+    )
+    server = ServerInfo(
+        model_id="m", backend="rocm", preset="", mode="container",
+        host="0.0.0.0", port=8080, started_at="", container_name="llamactl-m",
+    )
+    assert mon.read_server_vram_kib(server, "/usr/bin/docker") == 999
+
+
+def test_read_server_vram_kib_none_when_unresolvable():
+    from llamactl.core.lifecycle import ServerInfo
+    import llamactl.core.monitor as mon
+
+    # container mode but no runtime -> None
+    server = ServerInfo(
+        model_id="m", backend="rocm", preset="", mode="container",
+        host="0.0.0.0", port=8080, started_at="", container_name="llamactl-m",
+    )
+    assert mon.read_server_vram_kib(server, None) is None
