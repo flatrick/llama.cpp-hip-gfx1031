@@ -299,10 +299,15 @@ def build_image(
     repo_root: Path,
     runtime: str,
     stream_runner: StreamRunner = _default_stream_runner,
+    no_cache: bool = False,
 ) -> Iterator[str]:
     dockerfile = "Dockerfile.rocm" if target == "rocm-image" else "Dockerfile.vulkan"
-    cmd = [runtime, "build", "-f", str(repo_root / dockerfile),
-           "-t", image_tag, str(context_dir)]
+    cmd = [runtime, "build"]
+    if no_cache:
+        # Bypass the layer cache so the source is recompiled even when the build
+        # context is byte-identical to a previous build of the same ref.
+        cmd.append("--no-cache")
+    cmd += ["-f", str(repo_root / dockerfile), "-t", image_tag, str(context_dir)]
     yield from stream_runner(cmd, None)
 
 
@@ -336,6 +341,7 @@ def build_native(
 class BuildRequest:
     ref: str       # ref spec: submodule | latest-tag | tag:.. | branch:.. | commit:..
     target: str    # rocm-image | vulkan-image | rocm-native | vulkan-native
+    no_cache: bool = False  # image builds only: pass --no-cache to force a full rebuild
 
 
 def _now_iso() -> str:
@@ -403,7 +409,8 @@ def run_build(
             )
         else:
             tag = image_tag_for(request.target, request.ref)
-            yield from build_image(request.target, context, tag, repo_root, rt, stream_runner)
+            yield from build_image(request.target, context, tag, repo_root, rt,
+                                   stream_runner, no_cache=request.no_cache)
             artifact = Artifact(
                 target=request.target, requested_ref=request.ref, sha=resolved.sha,
                 build_number=resolved.build_number, built_at=_now_iso(),
