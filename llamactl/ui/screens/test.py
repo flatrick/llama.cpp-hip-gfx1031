@@ -139,12 +139,10 @@ class TestScreen(Widget):
         # another phase, and cancel the worker group. (Textual cannot interrupt an
         # in-flight HTTP request mid-phase, but this prevents the thread leak /
         # delayed-exit when the app quits during a run.)
+        # cancel_group is a no-op (returns []) when the group is empty, so no
+        # guard is needed — and swallowing errors here would hide real bugs.
         self._cancel_evt.set()
-        try:
-            self.workers.cancel_group(self, "oom-test")
-        except Exception:
-            # cancel_group raises if no worker group exists yet; harmless on teardown.
-            pass
+        self.workers.cancel_group(self, "oom-test")
 
     # ── Internal helpers ─────────────────────────────────────────────────────
 
