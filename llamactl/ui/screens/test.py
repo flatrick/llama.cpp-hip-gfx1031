@@ -13,7 +13,10 @@ from textual.widgets import Button, Checkbox, DataTable, Label, Static
 
 from llamactl.core.config import GlobalConfig
 from llamactl.core.lifecycle import ServerInfo, find_running
+from llamactl.core.monitor import read_server_vram_kib
 from llamactl.core.oomtest import OomTestResult, run_oom_check
+from llamactl.core.runtime import find_runtime
+from llamactl.ui.screens.serve import _VramGauge
 
 
 # ---------------------------------------------------------------------------
@@ -118,10 +121,12 @@ class TestScreen(Widget):
         # would silently force this flag True after mount.
         self._test_active = False      # whether a test run is in progress
         self._cancel_evt = threading.Event()  # cross-thread cancel signal
+        self._vram_timer = None
 
     def compose(self) -> ComposeResult:
         yield Label("OOM boundary check", id="test-title")
         yield Static("", id="test-precondition")
+        yield _VramGauge(id="test-vram")
         yield Checkbox("Quick mode (faster, fewer rounds)", value=True, id="quick-mode")
         yield Button("Run check", id="btn-run-test", disabled=True)
         table = DataTable(id="test-table")
@@ -177,6 +182,22 @@ class TestScreen(Widget):
             except NoMatches:
                 pass
 
+    def _poll_test_vram(self) -> None:
+        """Update the live VRAM gauge while a run is active. UI-thread only."""
+        if not self._test_active:
+            return
+        server = self._server()
+        if server is None:
+            return
+        rt = find_runtime() if server.mode == "container" else None
+        kib = read_server_vram_kib(server, rt)
+        try:
+            gauge = self.query_one("#test-vram", _VramGauge)
+            gauge.budget_kib = int(self.app._global_cfg.vram_budget_gb * 1024 * 1024)
+            gauge.vram_kib = kib
+        except NoMatches:
+            pass
+
     # ── Button handler ───────────────────────────────────────────────────────
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -198,6 +219,9 @@ class TestScreen(Widget):
             return
         self._cancel_evt.clear()
         self._test_active = True
+        if self._vram_timer is None:
+            self._vram_timer = self.set_interval(2.0, self._poll_test_vram)
+        self._poll_test_vram()
         # Capture app state on the UI thread; never read self.app from the worker.
         global_cfg = self.app._global_cfg
         try:
@@ -268,6 +292,13 @@ class TestScreen(Widget):
         except NoMatches:
             pass
         self._test_active = False
+        if self._vram_timer is not None:
+            self._vram_timer.stop()
+            self._vram_timer = None
+        try:
+            self.query_one("#test-vram", _VramGauge).vram_kib = 0
+        except NoMatches:
+            pass
         try:
             self.query_one("#quick-mode", Checkbox).disabled = False
         except NoMatches:

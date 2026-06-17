@@ -221,3 +221,32 @@ async def test_verdict_detail_markup_is_escaped(tmp_path):
         # vanish from the plain text; with escaping they survive literally.
         assert "[bold]" in plain
         assert "[red]" in plain
+
+
+@pytest.mark.asyncio
+async def test_test_pane_live_vram_gauge_updates(tmp_path, monkeypatch):
+    """The Test pane's VRAM gauge updates from read_server_vram_kib during a run."""
+    from llamactl.ui.app import LlamaCtlApp
+    import llamactl.ui.screens.test as test_mod
+    from llamactl.core.lifecycle import ServerInfo
+    from llamactl.ui.screens.test import TestScreen
+    from llamactl.ui.screens.serve import _VramGauge
+    from textual.widgets import TabbedContent
+
+    server = ServerInfo(
+        model_id="m", backend="rocm", preset="", mode="native",
+        host="0.0.0.0", port=8080, started_at="", pid=1234,
+    )
+    monkeypatch.setattr(test_mod, "find_running", lambda *_a, **_kw: server)
+    monkeypatch.setattr(test_mod, "read_server_vram_kib", lambda srv, rt: 3_000_000)
+
+    app = LlamaCtlApp(repo_root=_repo_with_model(tmp_path))
+    async with app.run_test(headless=True) as pilot:
+        app.query_one(TabbedContent).active = "test"
+        await pilot.pause()
+        screen = app.query_one(TestScreen)
+        screen._test_active = True
+        screen._poll_test_vram()
+        await pilot.pause()
+        gauge = screen.query_one("#test-vram", _VramGauge)
+        assert gauge.vram_kib == 3_000_000
