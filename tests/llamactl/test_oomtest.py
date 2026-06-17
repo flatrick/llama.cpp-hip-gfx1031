@@ -258,3 +258,31 @@ def test_run_phases_stops_on_cancel():
         **_noop_collaborators(),
     )
     assert [p.key for p in phases] == ["ramp"]  # cancelled after first
+
+
+def test_run_phases_cancel_after_defrag_returns_peak():
+    """Cancelling after defrag must still return the accumulated peak and must
+    not run boundary (regression guard for the run_phases refactor)."""
+    specs = {
+        "ramp": _FakePhase("ramp", last_ok=100, peak=5.0),
+        "sustained": _FakePhase("sustained", peak=6.0),
+        "cold_start": _FakePhase("cold-start", peak=7.0),
+        "defrag": _FakePhase("defrag", peak=9.0),
+        "boundary": _FakePhase("boundary", peak=99.0),  # must NOT run
+    }
+    calls = {"n": 0}
+
+    def cancel():
+        calls["n"] += 1
+        return calls["n"] > 3  # cancel() polled once per phase; True after defrag (4th)
+
+    phases, peak, vram_avail = run_phases(
+        config_steps=[1],
+        phase_set=_phase_set(specs),
+        cancel=cancel,
+        reporter=_RecordingReporter(),
+        **_noop_collaborators(),
+    )
+    assert [p.key for p in phases] == ["ramp", "sustained", "cold-start", "defrag"]
+    assert peak == 9.0
+    assert vram_avail is True

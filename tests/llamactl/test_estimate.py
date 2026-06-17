@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from llamactl.core.config import GlobalConfig, ModelConfig
 from llamactl.core.estimate import Estimate, compute_estimate, estimate_vram, resolve_gguf_path
 
@@ -39,6 +41,28 @@ def _global_cfg(tmp_path: Path) -> GlobalConfig:
         llama_cache=tmp_path / "llama",
         hf_cache=tmp_path / "hf",
     )
+
+
+@pytest.mark.parametrize("spec", [
+    "../../etc/passwd:Q5_K_M",       # traversal in repo part
+    "org/repo:../../../q",           # traversal in quant
+    "org/re*po:Q5_K_M",              # glob metachar in repo
+])
+def test_resolve_gguf_path_rejects_unsafe_spec(spec, tmp_path):
+    cfg = _global_cfg(tmp_path)
+    cfg.llama_cache.mkdir(parents=True, exist_ok=True)
+    cfg.hf_cache.mkdir(parents=True, exist_ok=True)
+    assert resolve_gguf_path(spec, cfg) is None
+
+
+def test_resolve_gguf_path_glob_metachar_does_not_match_planted_file(tmp_path):
+    # Non-vacuous: without validation, `*{repo}*{quant}*.gguf` with repo="re*po"
+    # expands and matches this planted file; the guard must reject it → None.
+    # (This test fails if the spec validation is removed.)
+    cfg = _global_cfg(tmp_path)
+    cfg.llama_cache.mkdir(parents=True, exist_ok=True)
+    (cfg.llama_cache / "xx_reXXpo_Q5_K_M.gguf").write_bytes(b"GGUF")
+    assert resolve_gguf_path("org/re*po:Q5_K_M", cfg) is None
 
 
 def test_resolve_finds_flattened_gguf_in_llama_cache(tmp_path):
@@ -145,3 +169,40 @@ def test_estimate_vram_returns_none_on_unreadable_gguf(tmp_path, monkeypatch):
     )
     model = _model("unsloth/Qwen3.5-9B-GGUF:UD-Q5_K_XL")
     assert estimate_vram(model, {"ctx_size": 2048}, cfg) is None
+
+
+class _DummyCfg:
+    """Stand-in GlobalConfig: estimate_vram only forwards it to resolve_gguf_path,
+    which is monkeypatched in these tests, so no real fields are read."""
+
+
+def test_estimate_vram_none_when_kv_heads_missing(monkeypatch):
+    """A GGUF whose header lacks KV-head metadata must yield None, not a
+    falsely-low estimate that omits the KV-cache term."""
+    monkeypatch.setattr(
+        "llamactl.core.estimate.resolve_gguf_path",
+        lambda hf, cfg: Path("/x/m.gguf"),
+    )
+    monkeypatch.setattr(
+        "llamactl.core.estimate.model_params_from_gguf",
+        lambda path: {"arch": "llm", "block_count": 32, "kv_layers": 32,
+                      "kv_heads": 0, "head_dim": 128, "weight_gb": 7.0},
+    )
+    model = _model("org/repo:Q5_K_M")
+    assert estimate_vram(model, {"ctx_size": 4096}, _DummyCfg()) is None
+
+
+def test_estimate_vram_none_when_head_dim_missing(monkeypatch):
+    """A GGUF whose header lacks head_dim metadata must yield None, not a
+    falsely-low estimate that omits the KV-cache term."""
+    monkeypatch.setattr(
+        "llamactl.core.estimate.resolve_gguf_path",
+        lambda hf, cfg: Path("/x/m.gguf"),
+    )
+    monkeypatch.setattr(
+        "llamactl.core.estimate.model_params_from_gguf",
+        lambda path: {"arch": "llm", "block_count": 32, "kv_layers": 32,
+                      "kv_heads": 8, "head_dim": 0, "weight_gb": 7.0},
+    )
+    model = _model("org/repo:Q5_K_M")
+    assert estimate_vram(model, {"ctx_size": 4096}, _DummyCfg()) is None

@@ -1,6 +1,9 @@
 """Test tab — quick OOM boundary check against the running server."""
 from __future__ import annotations
 
+import threading
+
+from rich.markup import escape
 from textual import on
 from textual.app import ComposeResult
 from textual.css.query import NoMatches
@@ -8,6 +11,7 @@ from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Button, DataTable, Label, Static
 
+from llamactl.core.config import GlobalConfig
 from llamactl.core.lifecycle import ServerInfo, find_running
 from llamactl.core.oomtest import OomTestResult, run_oom_check
 
@@ -107,6 +111,11 @@ class TestScreen(Widget):
     TestScreen #verdict { padding: 1; }
     """
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._running = False          # whether a test run is in progress
+        self._cancel_evt = threading.Event()  # cross-thread cancel signal
+
     def compose(self) -> ComposeResult:
         yield Label("OOM boundary check", id="test-title")
         yield Static("", id="test-precondition")
@@ -125,9 +134,17 @@ class TestScreen(Widget):
         )
 
     def on_mount(self) -> None:
-        self._running = False  # tracks whether a test run is in progress
-        self._cancelled = False
         self._refresh_precondition()
+
+    def on_unmount(self) -> None:
+        # Stop any in-flight run: set the cancel signal so the worker won't start
+        # another phase, and cancel the worker group. (Textual cannot interrupt an
+        # in-flight HTTP request mid-phase, but this prevents the thread leak /
+        # delayed-exit when the app quits during a run.)
+        # cancel_group is a no-op (returns []) when the group is empty, so no
+        # guard is needed — and swallowing errors here would hide real bugs.
+        self._cancel_evt.set()
+        self.workers.cancel_group(self, "oom-test")
 
     # ── Internal helpers ─────────────────────────────────────────────────────
 
@@ -140,7 +157,7 @@ class TestScreen(Widget):
         try:
             pre = self.query_one("#test-precondition", Static)
             btn = self.query_one("#btn-run-test", Button)
-        except Exception:
+        except NoMatches:
             return
         if server is None:
             pre.update("[yellow]Start a server on the Serve tab first.[/yellow]")
@@ -160,7 +177,7 @@ class TestScreen(Widget):
             return
         if self._running:
             # User pressed "Stop"
-            self._cancelled = True
+            self._cancel_evt.set()
             event.button.label = "Stopping…"
             event.button.disabled = True
         else:
@@ -171,7 +188,7 @@ class TestScreen(Widget):
         if server is None:
             self._refresh_precondition()
             return
-        self._cancelled = False
+        self._cancel_evt.clear()
         self._running = True
         # Capture app state on the UI thread; never read self.app from the worker.
         global_cfg = self.app._global_cfg
@@ -190,14 +207,14 @@ class TestScreen(Widget):
 
     # ── Worker (runs on a thread — must only post messages) ──────────────────
 
-    def _run_worker(self, server, global_cfg) -> None:
+    def _run_worker(self, server: ServerInfo, global_cfg: GlobalConfig) -> None:
         reporter = TextualReporter(self)
         try:
             result = run_oom_check(
                 server,
                 reporter,
                 global_cfg=global_cfg,
-                cancel=lambda: self._cancelled,
+                cancel=self._cancel_evt.is_set,
             )
         except Exception as exc:
             result = OomTestResult(
@@ -225,7 +242,7 @@ class TestScreen(Widget):
             colour = "red"
         try:
             self.query_one("#verdict", Static).update(
-                f"[{colour} bold]{result.verdict}[/{colour} bold]  {result.detail}"
+                f"[{colour} bold]{result.verdict}[/{colour} bold]  {escape(result.detail)}"
             )
         except NoMatches:
             pass
