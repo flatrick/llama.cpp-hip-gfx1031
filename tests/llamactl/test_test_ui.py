@@ -101,3 +101,22 @@ async def test_cancel_signal_is_threading_event(tmp_path):
         screen = app.query_one(TestScreen)
         assert isinstance(screen._cancel_evt, threading.Event)
         assert not screen._cancel_evt.is_set()
+
+
+@pytest.mark.asyncio
+async def test_unmount_sets_cancel_signal(tmp_path):
+    """Tearing down the screen mid-run must signal cancellation so the worker
+    stops before the next phase (no thread leak / shutdown hang)."""
+    from llamactl.ui.app import LlamaCtlApp
+    from llamactl.ui.screens.test import TestScreen
+    from textual.widgets import TabbedContent
+
+    app = LlamaCtlApp(repo_root=_repo_with_model(tmp_path))
+    async with app.run_test(headless=True) as pilot:
+        app.query_one(TabbedContent).active = "test"
+        await pilot.pause()
+        screen = app.query_one(TestScreen)
+        # Simulate an in-progress run.
+        screen._running = True
+        screen.on_unmount()
+        assert screen._cancel_evt.is_set()

@@ -134,6 +134,18 @@ class TestScreen(Widget):
     def on_mount(self) -> None:
         self._refresh_precondition()
 
+    def on_unmount(self) -> None:
+        # Stop any in-flight run: set the cancel signal so the worker won't start
+        # another phase, and cancel the worker group. (Textual cannot interrupt an
+        # in-flight HTTP request mid-phase, but this prevents the thread leak /
+        # delayed-exit when the app quits during a run.)
+        self._cancel_evt.set()
+        try:
+            self.workers.cancel_group(self, "oom-test")
+        except Exception:
+            # cancel_group raises if no worker group exists yet; harmless on teardown.
+            pass
+
     # ── Internal helpers ─────────────────────────────────────────────────────
 
     def _server(self) -> ServerInfo | None:
