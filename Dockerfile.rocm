@@ -14,7 +14,7 @@ ENV HSA_OVERRIDE_GFX_VERSION=10.3.0
 ENV HIP_VISIBLE_DEVICES=0
 
 RUN apt-get update && apt-get install -y \
-    cmake ninja-build g++ hipblas-dev libcurl4-openssl-dev git \
+    cmake ninja-build g++ libcurl4-openssl-dev git \
     && rm -rf /var/lib/apt/lists/*
 
 # Source is cloned on the host by the launcher script and copied in here,
