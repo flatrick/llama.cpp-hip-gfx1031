@@ -111,7 +111,7 @@ overridden on the command line.
 ### List available models
 
 ```bash
-python run.py --list-models
+python run.py --list
 ```
 
 ### Common invocations
